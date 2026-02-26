@@ -119,6 +119,3 @@ class Message(Base):
     )
 
     chat: Mapped["Chat"] = relationship("Chat", back_populates="messages")
-
-
-
