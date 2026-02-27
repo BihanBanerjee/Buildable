@@ -36,6 +36,9 @@ class User(Base):
     chats: Mapped[List["Chat"]] = relationship(
         "Chat", back_populates="user", cascade="all, delete-orphan"
     )
+    refresh_tokens: Mapped[List["RefreshToken"]] = relationship(
+        "RefreshToken", back_populates="user", cascade="all, delete-orphan"
+    )
 
     
     def can_make_query(self) -> bool:
@@ -119,3 +122,19 @@ class Message(Base):
     )
 
     chat: Mapped["Chat"] = relationship("Chat", back_populates="messages")
+
+
+
+class RefreshToken(Base):
+    __tablename__ = "refresh_tokens"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True, nullable=False)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id", ondelete="CASCADE"))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked: Mapped[bool] = mapped_column(default=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+
+    user: Mapped["User"] = relationship("User", back_populates="refresh_tokens")
