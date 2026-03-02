@@ -93,6 +93,7 @@ class Chat(Base):
     )
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     app_url: Mapped[Optional[str]] = mapped_column(String(1024), nullable=True)
+    model_choice: Mapped[str] = mapped_column(String(50), nullable=False, default="gemini", server_default="gemini")
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)

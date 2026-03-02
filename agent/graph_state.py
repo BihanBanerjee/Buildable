@@ -1,6 +1,5 @@
-from typing import TypedDict, List, Dict, Any, Optional
-from e2b_code_interpreter import AsyncSandbox
-import asyncio
+from typing import TypedDict, List, Dict, Any, Optional, Annotated
+import operator
 
 
 class GraphState(TypedDict):
@@ -9,12 +8,15 @@ class GraphState(TypedDict):
     project_id: str  # Also serves as chat_id
     user_prompt: str
     enhanced_prompt: str
+    is_first_message: bool  # True for initial build, False for follow-up prompts
 
     # Planning phase
     plan: Optional[Dict[str, Any]]
 
     # Building phase
-    files_created: List[str]
+    # Annotated with operator.add so lists accumulate across builder retries
+    # rather than being overwritten. Deduplicate at read time in service.py.
+    files_created: Annotated[List[str], operator.add]
     files_modified: List[str]
 
     # Error tracking
@@ -26,13 +28,12 @@ class GraphState(TypedDict):
     retry_count: Dict[str, int]
     max_retries: int
 
-    # Environment
-    sandbox: Optional[AsyncSandbox]
-    event_queue: Optional[asyncio.Queue]
-
     # Node execution tracking
     current_node: str
-    execution_log: List[Dict[str, Any]]
+    execution_log: Annotated[List[Dict[str, Any]], operator.add]
+
+    # Model selection — "gemini" (gemini-2.5-pro) or "claude" (claude-sonnet-4-5)
+    model_choice: str
 
     # Results
     success: bool

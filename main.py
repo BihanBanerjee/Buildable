@@ -45,6 +45,7 @@ active_runs: dict[str, asyncio.Task] = {}
 
 class ChatPayload(BaseModel):
     prompt: str
+    model_choice: str = "gemini"  # "gemini" or "claude"
 
 
 class ChatMessagePayload(BaseModel):
@@ -143,10 +144,13 @@ async def create_project(
             {"error": "Project is being created. Kindly wait"}, status_code=400
         )
 
+    model_choice = payload.model_choice if payload.model_choice in ("gemini", "claude") else "gemini"
+
     new_chat = Chat(
         id=chat_id,
         user_id=current_user.id,
         title=prompt[:100] if len(prompt) > 100 else prompt,
+        model_choice=model_choice,
     )
 
     db.add(new_chat)
@@ -182,7 +186,8 @@ async def create_project(
     async def agent_task():
         try:
             await agent_service.run_agent_stream(
-                prompt=prompt, id=chat_id, event_queue=event_queue
+                prompt=prompt, id=chat_id, event_queue=event_queue,
+                model_choice=model_choice, is_first_message=True
             )
         except Exception as e:
             print(f"Agent error: {e}")
@@ -258,20 +263,32 @@ async def get_project_files(id: str, current_user: User = Depends(get_current_us
     if not chat or chat.user_id != current_user.id:
         raise HTTPException(status_code=403, detail="Not authorized to access this project")
 
+    # Try live sandbox first (fastest, always up-to-date)
     sandbox = agent_service.sandboxes.get(id)
-    if not sandbox:
-        raise HTTPException(status_code=404, detail="Project sandbox not found or not active.")
+    if sandbox:
+        try:
+            files = await _list_sandbox_files(sandbox)
+            return {
+                "project_id": id,
+                "files": files,
+                "sandbox_id": sandbox.sandbox_id,
+                "sandbox_active": True,
+            }
+        except Exception as e:
+            print(f"Live sandbox file listing failed for {id}, falling back to disk: {e}")
 
-    try:
-        files = await _list_sandbox_files(sandbox)
+    # Sandbox not in memory or query failed — fall back to disk snapshot
+    metadata_file = os.path.join(agent_service.storage_base_path, id, "metadata.json")
+    if os.path.exists(metadata_file):
+        with open(metadata_file) as f:
+            metadata = json.load(f)
         return {
             "project_id": id,
-            "files": files,
-            "sandbox_id": sandbox.sandbox_id,
-            "sandbox_active": True,
+            "files": metadata.get("files", []),
+            "sandbox_id": metadata.get("sandbox_id"),
+            "sandbox_active": False,
         }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error fetching files: {str(e)}")
+    raise HTTPException(status_code=404, detail="Project not found or no files available.")
 
 
 @app.get("/projects/{id}/files/{file_path:path}")
@@ -527,11 +544,14 @@ async def send_message(
     except Exception as e:
         print(f"Failed to send token update: {e}")
 
-    # Start agent task
+    # Start agent task (read model_choice from the chat record so follow-ups use the same model)
+    chat_model_choice = getattr(chat, "model_choice", "gemini") or "gemini"
+
     async def agent_task():
         try:
             await agent_service.run_agent_stream(
-                prompt=prompt, id=id, event_queue=event_queue
+                prompt=prompt, id=id, event_queue=event_queue,
+                model_choice=chat_model_choice, is_first_message=False
             )
         except Exception as e:
             print(f"Error in agent task for project {id}: {e}")

@@ -3,11 +3,14 @@ import asyncio
 from langchain_core.tools import tool
 import os
 import json
+from datetime import datetime
 from utils.store import save_json_store, load_json_store
 
 
 def create_tools_with_context(
-    sandbox: AsyncSandbox, event_queue: asyncio.Queue, project_id: str = None
+    sandbox: AsyncSandbox, event_queue: asyncio.Queue, project_id: str = None,
+    validation_results: dict = None, files_tracker: list = None,
+    include_test_build: bool = True,
 ):
     """Create tools with sandbox and event queue context"""
     def safe_send_event(queue: asyncio.Queue, data: dict) -> bool:
@@ -40,18 +43,13 @@ def create_tools_with_context(
             # The React app is in /home/user/react-app
             full_path = os.path.join("/home/user/react-app", file_path)
 
-            # The LLM sometimes generates code with literal \n instead of actual newlines
-            # We need to handle this by decoding escape sequences
-            # Use bytes decode to properly interpret escape sequences
-            try:
-                # Try to decode the content as if it contains escaped characters
-                # This converts literal \n, \t, etc. to actual newline and tab characters
-                fixed_content = content.encode("utf-8").decode("unicode_escape")
-            except (UnicodeDecodeError, AttributeError):
-                # If decode fails, content is likely already correct, use as-is
-                fixed_content = content
-
-            await sandbox.files.write(full_path, fixed_content)
+            # LangChain deserialises tool arguments from JSON before invoking the function,
+            # so Python string escape sequences (\n, \t, etc.) are already real characters
+            # by the time content arrives here. The old encode/decode("unicode_escape")
+            # hack corrupted any non-ASCII content (UTF-8 multi-byte → Latin-1 garbage).
+            await sandbox.files.write(full_path, content)
+            if files_tracker is not None:
+                files_tracker.append(file_path)
             safe_send_event(event_queue, {"e": "file_created", "message": f"Created {file_path}"})
             return f"File {file_path} created successfully."
         except Exception as e:
@@ -131,7 +129,7 @@ def create_tools_with_context(
             safe_send_event(event_queue, {"e": "command_started", "command": command})
 
             # The React app is in /home/user/react-app
-            result = await sandbox.commands.run(command, cwd="/home/user/react-app")
+            result = await sandbox.commands.run(command, cwd="/home/user/react-app", timeout=120)
 
             safe_send_event(
                 event_queue,
@@ -198,7 +196,7 @@ def create_tools_with_context(
             safe_send_event(event_queue, {"e": "command_started", "command": f"tree -I 'node_modules|.*' {path}"})
 
             result = await sandbox.commands.run(
-                f"tree -I 'node_modules|.*' {path}", cwd="/home/user/react-app"
+                f"tree -I 'node_modules|.*' {path}", cwd="/home/user/react-app", timeout=30
             )
 
             safe_send_event(
@@ -260,7 +258,6 @@ def create_tools_with_context(
             This is useful for validating that all files are correct before deployment
         """
 
-        return "build success"
         try:
             path = "/home/user/react-app"
 
@@ -268,11 +265,11 @@ def create_tools_with_context(
 
             # Clean Vite cache first nd run npm install
             clean_command = "rm -rf node_modules/.vite-temp && npm install"
-            await sandbox.commands.run(clean_command, cwd=path)
+            await sandbox.commands.run(clean_command, cwd=path, timeout=180)
 
             # Run build
             build_command = "npm run build"
-            res = await sandbox.commands.run(build_command, cwd=path)
+            res = await sandbox.commands.run(build_command, cwd=path, timeout=180)
 
             if res.exit_code == 0:
                 safe_send_event(
@@ -300,56 +297,48 @@ def create_tools_with_context(
             return f"Build test failed with error: {str(e)}"
 
     @tool
-    async def write_multiple_files(files: str) -> str:
+    async def write_multiple_files(files: list[dict]) -> str:
         """
-        Write multiple files to the sandbox at once for better efficiency.
+        Write multiple files to the sandbox at once. PREFERRED over create_file for new files.
 
         Args:
-            files: JSON string containing array of file objects with 'path' and 'data' keys
+            files: List of file objects, each with 'path' and 'data' keys.
+                   'path' is relative to the react-app root (e.g. "src/components/Header.jsx").
+                   'data' is the full file content as a plain string.
 
         Returns:
-            Success message with list of created files or error message
-
-        Format:
-            [
-                {"path": "src/App.jsx", "data": "import React from 'react';..."},
-                {"path": "src/components/Header.jsx", "data": "export default function Header() {...}"}
-            ]
+            Success message listing all created files, or an error message.
 
         Example:
-            write_multiple_files('[{"path": "src/App.jsx", "data": "import React from \'react\'; export default function App() { return <div>Hello</div>; }"}]')
-
-        Benefits:
-            - More efficient than creating files one by one
-            - Prevents agent from stopping prematurely
-            - Creates complete application structure at once
+            write_multiple_files([
+                {"path": "src/components/Header.jsx", "data": "import React from 'react';\nexport default function Header() { return <header>App</header>; }"},
+                {"path": "src/pages/Home.jsx",        "data": "import Header from '../components/Header';\nexport default function Home() { return <div><Header /></div>; }"}
+            ])
         """
         try:
-            files_data = json.loads(files)
-
-            # Convert to the format expected by E2B
-            file_objects = []
-            for file_info in files_data:
-                # Fix escape sequences in the data (same as create_file)
-                content = file_info["data"]
-                try:
-                    # Try to decode the content as if it contains escaped characters
-                    # This converts literal \n, \t, etc. to actual newline and tab characters
-                    fixed_content = content.encode("utf-8").decode("unicode_escape")
-                except (UnicodeDecodeError, AttributeError):
-                    # If decode fails, content is likely already correct, use as-is
-                    fixed_content = content
-
-                file_objects.append(
-                    {
-                        "path": os.path.join("/home/user/react-app", file_info["path"]),
-                        "data": fixed_content,
-                    }
+            # Validate each entry has the required keys before touching the sandbox
+            invalid = [i for i, f in enumerate(files) if "path" not in f or "data" not in f]
+            if invalid:
+                return (
+                    f"ERROR: files[{invalid}] missing required 'path' or 'data' key. "
+                    "Each entry must be {\"path\": \"src/...\", \"data\": \"...content...\"}."
                 )
+
+            # Convert to the absolute paths E2B expects
+            file_objects = [
+                {
+                    "path": os.path.join("/home/user/react-app", f["path"]),
+                    "data": f["data"],
+                }
+                for f in files
+            ]
 
             await sandbox.files.write_files(file_objects)
 
-            file_names = [f["path"] for f in files_data]
+            file_names = [f["path"] for f in files]
+            if files_tracker is not None:
+                files_tracker.extend(file_names)
+
             safe_send_event(
                 event_queue,
                 {
@@ -357,10 +346,7 @@ def create_tools_with_context(
                     "message": f"Created {len(file_names)} files: {', '.join(file_names)}",
                 },
             )
-
-            return (
-                f"Successfully created {len(file_names)} files: {', '.join(file_names)}"
-            )
+            return f"Successfully created {len(file_names)} files: {', '.join(file_names)}"
 
         except Exception as e:
             safe_send_event(
@@ -476,7 +462,7 @@ def create_tools_with_context(
                 "semantic": semantic or existing_context.get("semantic", ""),
                 "procedural": procedural or existing_context.get("procedural", ""),
                 "episodic": episodic or existing_context.get("episodic", ""),
-                "last_updated": str(os.popen("date").read().strip()),
+                "last_updated": datetime.now().isoformat(),
                 "files_created": existing_context.get("files_created", []),
                 "conversation_history": existing_context.get(
                     "conversation_history", []
@@ -518,38 +504,33 @@ def create_tools_with_context(
                 f.strip() for f in find_result.stdout.strip().split("\n") if f.strip()
             ]
 
-            # Scan all files for import statements
-            all_imports = set()
-            for file_path in source_files:
+            # Scan all files for import statements concurrently
+            async def extract_imports(file_path: str) -> set:
                 try:
-                    full_path = f"/home/user/react-app/{file_path}"
-                    content = await sandbox.files.read(full_path)
-
-                    # Extract import statements
-                    import_lines = [
-                        line.strip()
-                        for line in content.split("\n")
-                        if line.strip().startswith("import")
-                    ]
-                    for line in import_lines:
-                        # Extract package names from import statements
+                    content = await sandbox.files.read(f"/home/user/react-app/{file_path}")
+                    imports = set()
+                    for line in content.split("\n"):
+                        line = line.strip()
+                        if not line.startswith("import"):
+                            continue
                         if "from" in line:
-                            package = line.split("from")[1].strip().strip("'\"")
-                            # Extract root package name (e.g., 'react-icons/fa' -> 'react-icons')
-                            root_package = package.split("/")[0]
-                            all_imports.add(root_package)
-                        elif "import" in line and not "from" in line:
-                            # Handle import { something } from 'package' syntax
-                            if "'" in line or '"' in line:
-                                package = (
-                                    line.split("'")[1]
-                                    if "'" in line
-                                    else line.split('"')[1]
-                                )
-                                root_package = package.split("/")[0]
-                                all_imports.add(root_package)
+                            # Split on last "from" keyword, strip quotes and trailing punctuation
+                            package = line.split("from")[-1].strip().strip("'\"`;; ")
+                            root = package.split("/")[0]
+                            if root and not root.startswith("."):
+                                imports.add(root)
+                        elif "'" in line or '"' in line:
+                            package = line.split("'")[1] if "'" in line else line.split('"')[1]
+                            root = package.split("/")[0]
+                            if root and not root.startswith("."):
+                                imports.add(root)
+                    return imports
                 except Exception as e:
                     print(f"Error reading {file_path}: {e}")
+                    return set()
+
+            import_sets = await asyncio.gather(*[extract_imports(f) for f in source_files])
+            all_imports = set().union(*import_sets) if import_sets else set()
 
             # Check which packages are missing
             missing_packages = []
@@ -595,11 +576,10 @@ def create_tools_with_context(
             )
             return f"Dependency check failed: {str(e)}"
 
-    return [
+    tools = [
         create_file,
         read_file,
         execute_command,
-        test_build,
         delete_file,
         list_directory,
         write_multiple_files,
@@ -607,3 +587,35 @@ def create_tools_with_context(
         save_context,
         check_missing_packages,
     ]
+
+    if include_test_build:
+        tools.insert(3, test_build)
+
+    if validation_results is not None:
+        @tool
+        def report_validation_result(errors: list[str], summary: str) -> str:
+            """
+            REQUIRED as your FINAL action: report what you found during validation.
+
+            Args:
+                errors: List of error strings that still remain after your fixes.
+                        Pass an empty list [] if all issues were fixed successfully.
+                summary: One-line summary of what was checked and what was fixed.
+
+            Example (errors fixed):
+                report_validation_result(errors=[], summary="Fixed missing react-icons import and corrected Header.jsx syntax")
+
+            Example (errors remain):
+                report_validation_result(errors=["App.jsx line 12: undefined component <Sidebar />"], summary="Found unresolved component reference")
+            """
+            validation_results["errors"] = errors
+            validation_results["summary"] = summary
+            safe_send_event(
+                event_queue,
+                {"e": "validation_report", "errors": errors, "summary": summary},
+            )
+            return f"Validation report saved. Remaining errors: {len(errors)}."
+
+        tools.append(report_validation_result)
+
+    return tools

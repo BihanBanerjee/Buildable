@@ -1,6 +1,7 @@
 from langgraph.graph import StateGraph, END
 from .graph_state import GraphState
 from .graph_nodes import (
+    enhancer_node,
     planner_node,
     builder_node,
     code_validator_node,
@@ -17,15 +18,17 @@ def create_langgraph_workflow():
     workflow = StateGraph(GraphState)
 
     # Add nodes
+    workflow.add_node("enhancer", enhancer_node)
     workflow.add_node("planner", planner_node)
     workflow.add_node("builder", builder_node)
     workflow.add_node("code_validator", code_validator_node)
     workflow.add_node("application_checker", application_checker_node)
 
     # Set entry point
-    workflow.set_entry_point("planner")
+    workflow.set_entry_point("enhancer")
 
     # Add edges with retry logic
+    workflow.add_edge("enhancer", "planner")
     workflow.add_edge("planner", "builder")
     workflow.add_edge("builder", "code_validator")
 

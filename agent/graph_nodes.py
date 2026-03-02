@@ -1,10 +1,11 @@
 from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.runnables import RunnableConfig
+from pydantic import BaseModel, Field
 import asyncio
-import copy
-import re
+from typing import List
 from .graph_state import GraphState
 from .tools import create_tools_with_context
-from .agent import llm_gemini_pro, llm_gemini_flash
+from .agent import llm_gemini_pro, llm_gemini_flash, llm_claude_sonnet, llm_claude_haiku
 from .formatters import (
     create_formatted_message,
     format_plan_as_markdown,
@@ -13,12 +14,22 @@ from .formatters import (
 )
 import json
 from langgraph.prebuilt import create_react_agent
-from .prompts import INITPROMPT, VALIDATOR_PROMPT, get_builder_error_prompt, get_builder_prompt
+from .prompts import INITPROMPT, VALIDATOR_PROMPT, ENHANCER_PROMPT, get_builder_error_prompt, get_builder_prompt
 from utils.store import load_json_store
 import traceback
 from db.base import AsyncSessionLocal
 from db.models import Message
 import uuid
+
+
+class PlanSchema(BaseModel):
+    """Validated structure for the planner's output."""
+    overview: str = Field(description="Application overview and purpose")
+    components: List[str] = Field(default_factory=list, description="React components to create")
+    pages: List[str] = Field(default_factory=list, description="Pages / routes")
+    dependencies: List[str] = Field(default_factory=list, description="npm packages to install")
+    file_structure: List[str] = Field(default_factory=list, description="File paths to create")
+    implementation_steps: List[str] = Field(default_factory=list, description="Ordered build steps")
 
 
 def safe_send_event(event_queue: asyncio.Queue, data: dict):
@@ -54,15 +65,11 @@ async def _stream_agent_events(
     config: dict,
     event_queue: asyncio.Queue,
     project_id: str,
-) -> list:
-    """
-    Stream agent events to the SSE queue and store them in the DB.
-    Returns list of file paths detected from tool outputs (for builder tracking).
-    """
-    files_created = []
+) -> None:
+    """Stream agent events to the SSE queue and store them in the DB."""
 
     async for event in agent_executor.astream_events(
-        {"messages": messages}, version="v1", config=config
+        {"messages": messages}, version="v2", config=config
     ):
         kind = event["event"]
 
@@ -130,19 +137,65 @@ async def _stream_agent_events(
                 tool_calls=[{"name": tool_name, "status": "success", "output": tool_output[:500]}],
             )
 
-            if "created" in tool_output.lower() and "file" in tool_output.lower():
-                file_matches = re.findall(r"(\w+\.(jsx?|tsx?|css|json))", tool_output)
-                files_created.extend([match[0] for match in file_matches])
-
-    return files_created
 
 
-async def planner_node(state: GraphState) -> GraphState:
+async def enhancer_node(state: GraphState, config: RunnableConfig) -> dict:
+    """
+    Enhancer node: Expands short/vague user prompts into detailed product descriptions.
+    Only runs on the first message — follow-up prompts pass through unchanged.
+    """
+    configurable = config.get("configurable", {})
+    event_queue = configurable.get("event_queue")
+
+    user_prompt = state.get("user_prompt", "")
+    is_first_message = state.get("is_first_message", True)
+
+    # Follow-up prompts: skip enhancement, pass through as-is
+    if not is_first_message:
+        print("Enhancer node: follow-up prompt, skipping enhancement")
+        return {"enhanced_prompt": user_prompt}
+
+    try:
+        if event_queue:
+            safe_send_event(event_queue, {
+                "e": "enhancer_started",
+                "message": "Understanding your idea...",
+            })
+
+        print(f"Enhancer node: enhancing prompt: {user_prompt[:80]}")
+
+        messages = [
+            SystemMessage(content=ENHANCER_PROMPT),
+            HumanMessage(content=user_prompt),
+        ]
+
+        response = await llm_gemini_flash.ainvoke(messages)
+        enhanced = response.content.strip()
+
+        print(f"Enhancer node: enhanced prompt: {enhanced[:120]}")
+
+        if event_queue:
+            safe_send_event(event_queue, {
+                "e": "enhancer_complete",
+                "message": "Got it! Planning your application...",
+            })
+
+        return {"enhanced_prompt": enhanced}
+
+    except Exception as e:
+        # On any failure, fall back to the original prompt — never block the build
+        print(f"Enhancer node failed, using original prompt: {e}")
+        return {"enhanced_prompt": user_prompt}
+
+
+async def planner_node(state: GraphState, config: RunnableConfig) -> dict:
     """
     Planner node: Analyzes user prompt and generates comprehensive implementation plan
     """
+    configurable = config.get("configurable", {})
+    event_queue = configurable.get("event_queue")
+
     try:
-        event_queue = state.get("event_queue")
         if event_queue:
             safe_send_event(event_queue,
                 {
@@ -161,17 +214,17 @@ async def planner_node(state: GraphState) -> GraphState:
         # check if previous context is there
         if project_id:
             print(f"Loading context for project: {project_id}")
-            context = load_json_store(project_id, "context.json")
+            context = await asyncio.to_thread(load_json_store, project_id, "context.json")
             print(f"Loaded context: {context}")
 
             if context:
                 print(f"Context keys found: {context.keys()}")
-                
+
                 # Format conversation history
                 conversation_history_text = ""
                 conversation_history = context.get("conversation_history", [])
                 print(f"Conversation history entries: {len(conversation_history)}")
-                
+
                 if conversation_history:
                     conversation_history_text = (
                         "\nCONVERSATION HISTORY (Last requests):\n"
@@ -183,19 +236,19 @@ async def planner_node(state: GraphState) -> GraphState:
                 previous_context = f"""
 
                 IMPORTANT: PREVIOUS WORK ON THIS PROJECT
-                
+
                 WHAT THIS PROJECT IS:
                 {context.get('semantic', 'Not documented')}
-                
+
                 HOW IT WORKS:
                 {context.get('procedural', 'Not documented')}
-                
+
                 WHAT HAS BEEN DONE:
                 {context.get('episodic', 'Not documented')}
-                
+
                 EXISTING FILES: {len(context.get('files_created', []))} files already exist
-                {conversation_history_text} 
-                
+                {conversation_history_text}
+
                 CRITICAL: This is an EXISTING project. Your plan should:
                 - Build upon what already exists
                 - Consider the conversation history to understand the user's intent
@@ -245,41 +298,9 @@ async def planner_node(state: GraphState) -> GraphState:
             event_type="thinking"
         )
 
-        response = await llm_gemini_flash.ainvoke(messages)
-
-        # Format the plan preview for better display
-        plan_preview = response.content[:500] if len(response.content) > 500 else response.content
-        formatted_preview = create_formatted_message("thinking", plan_preview)
-
-        if event_queue:
-            safe_send_event(event_queue, formatted_preview)
-
-        # Store plan preview with formatting
-        await store_message(
-            chat_id=state.get("project_id"),
-            role="assistant",
-            content=formatted_preview.get("formatted", plan_preview),
-            event_type="thinking"
-        )
-
-        try:
-            plan = json.loads(response.content)
-        except json.JSONDecodeError:
-            plan = {
-                "overview": response.content,
-                "components": [],
-                "pages": [],
-                "dependencies": [],
-                "file_structure": [],
-                "implementation_steps": [],
-            }
-
-        new_state = copy.deepcopy(state)
-        new_state["plan"] = plan
-        new_state["current_node"] = "planner"
-        new_state["execution_log"].append(
-            {"node": "planner", "status": "completed", "plan": plan}
-        )
+        # Structured output — validates the plan against PlanSchema; no manual JSON parsing needed
+        plan_result = await llm_gemini_flash.with_structured_output(PlanSchema).ainvoke(messages)
+        plan = plan_result.model_dump()
 
         # Create formatted plan message
         formatted_plan_msg = create_formatted_message(
@@ -311,34 +332,36 @@ async def planner_node(state: GraphState) -> GraphState:
                 event_type="description"
             )
 
-        return new_state
+        return {
+            "plan": plan,
+            "current_node": "planner",
+            "execution_log": [{"node": "planner", "status": "completed", "plan": plan}],
+        }
 
     except Exception as e:
         error_msg = f"Planner node error: {str(e)}"
         print(error_msg)
 
-        new_state = copy.deepcopy(state)
-        new_state["current_node"] = "planner"
-        new_state["error_message"] = error_msg
-        new_state["execution_log"].append(
-            {"node": "planner", "status": "error", "error": error_msg}
-        )
-
         if event_queue:
             safe_send_event(event_queue, {"e": "planner_error", "message": error_msg})
 
-        return new_state
+        return {
+            "plan": {},
+            "current_node": "planner",
+            "error_message": error_msg,
+            "execution_log": [{"node": "planner", "status": "error", "error": error_msg}],
+        }
 
 
-async def builder_node(state: GraphState) -> GraphState:
+async def builder_node(state: GraphState, config: RunnableConfig) -> dict:
     """
     Builder node: Creates and modifies files based on plan or feedback
     """
+    configurable = config.get("configurable", {})
+    event_queue = configurable.get("event_queue")
+    sandbox = configurable.get("sandbox")
 
     try:
-        event_queue = state.get("event_queue")
-        sandbox = state.get("sandbox")
-
         if not sandbox:
             raise Exception("Sandbox not available")
 
@@ -358,7 +381,8 @@ async def builder_node(state: GraphState) -> GraphState:
 
         project_id = state.get("project_id", "")
 
-        base_tools = create_tools_with_context(sandbox, event_queue, project_id)
+        files_tracker: list = []
+        base_tools = create_tools_with_context(sandbox, event_queue, project_id, files_tracker=files_tracker)
 
         if current_errors:
             error_details = []
@@ -382,35 +406,34 @@ async def builder_node(state: GraphState) -> GraphState:
             HumanMessage(content=builder_prompt),
         ]
 
-        agent_executor = create_react_agent(llm_gemini_pro, tools=base_tools)
-        config = {"recursion_limit": 50}
+        model_choice = state.get("model_choice", "gemini")
+        if model_choice == "claude" and llm_claude_sonnet is not None:
+            builder_llm = llm_claude_sonnet
+            print("Builder node: Using Claude Sonnet 4")
+        else:
+            builder_llm = llm_gemini_pro
+            print("Builder node: Using Gemini 2.5 Pro")
+        agent_executor = create_react_agent(builder_llm, tools=base_tools)
+        agent_config = {"recursion_limit": 50}
 
         try:
             print(
                 f"Builder node: Starting agent execution with {len(base_tools)} tools"
             )
 
-            files_created = await _stream_agent_events(
-                agent_executor, messages, config, event_queue, project_id
+            await asyncio.wait_for(
+                _stream_agent_events(
+                    agent_executor, messages, agent_config, event_queue, project_id
+                ),
+                timeout=600,
             )
+            files_created = files_tracker
             files_modified = []
 
             print(f"Builder node: Agent execution completed")
             print(f"Builder node: Final files_created: {files_created}")
 
-            new_state = copy.deepcopy(state)
-            new_state["files_created"] = files_created
-            new_state["files_modified"] = files_modified
             print(f"INFO : {files_created}")
-            new_state["current_node"] = "builder"
-            new_state["execution_log"].append(
-                {
-                    "node": "builder",
-                    "status": "completed",
-                    "files_created": files_created,
-                    "files_modified": files_modified,
-                }
-            )
 
             if event_queue:
                 safe_send_event(event_queue,
@@ -434,25 +457,23 @@ async def builder_node(state: GraphState) -> GraphState:
                     event_type="summary"
                 )
 
-            return new_state
+            return {
+                "files_created": files_created,
+                "files_modified": files_modified,
+                "current_errors": {},
+                "current_node": "builder",
+                "execution_log": [
+                    {
+                        "node": "builder",
+                        "status": "completed",
+                        "files_created": files_created,
+                        "files_modified": files_modified,
+                    }
+                ],
+            }
 
         except asyncio.TimeoutError:
             print("Builder agent timed out after 10 minutes")
-            files_created = []
-            files_modified = []
-
-            new_state = copy.deepcopy(state)
-            new_state["files_created"] = files_created
-            new_state["files_modified"] = files_modified
-            new_state["current_node"] = "builder"
-            new_state["execution_log"].append(
-                {
-                    "node": "builder",
-                    "status": "timeout",
-                    "files_created": files_created,
-                    "files_modified": files_modified,
-                }
-            )
 
             if event_queue:
                 safe_send_event(event_queue,
@@ -462,26 +483,18 @@ async def builder_node(state: GraphState) -> GraphState:
                     }
                 )
 
-            return new_state
+            return {
+                "files_created": [],
+                "files_modified": [],
+                "current_node": "builder",
+                "execution_log": [
+                    {"node": "builder", "status": "timeout", "files_created": [], "files_modified": []}
+                ],
+            }
 
         except Exception as e:
             print(f"Builder agent execution error: {e}")
             traceback.print_exc()
-            files_created = []
-            files_modified = []
-
-            new_state = copy.deepcopy(state)
-            new_state["files_created"] = files_created
-            new_state["files_modified"] = files_modified
-            new_state["current_node"] = "builder"
-            new_state["execution_log"].append(
-                {
-                    "node": "builder",
-                    "status": "error",
-                    "files_created": files_created,
-                    "files_modified": files_modified,
-                }
-            )
 
             if event_queue:
                 safe_send_event(event_queue,
@@ -491,34 +504,39 @@ async def builder_node(state: GraphState) -> GraphState:
                     }
                 )
 
-            return new_state
+            return {
+                "files_created": [],
+                "files_modified": [],
+                "current_node": "builder",
+                "execution_log": [
+                    {"node": "builder", "status": "error", "files_created": [], "files_modified": []}
+                ],
+            }
 
     except Exception as e:
         error_msg = f"Builder node error: {str(e)}"
         print(error_msg)
 
-        new_state = copy.deepcopy(state)
-        new_state["current_node"] = "builder"
-        new_state["error_message"] = error_msg
-        new_state["execution_log"].append(
-            {"node": "builder", "status": "error", "error": error_msg}
-        )
-
         if event_queue:
             safe_send_event(event_queue, {"e": "builder_error", "message": error_msg})
 
-        return new_state
+        return {
+            "current_node": "builder",
+            "error_message": error_msg,
+            "execution_log": [{"node": "builder", "status": "error", "error": error_msg}],
+        }
 
 
 
-async def code_validator_node(state: GraphState) -> GraphState:
+async def code_validator_node(state: GraphState, config: RunnableConfig) -> dict:
     """
     Code Validator node: Active React agent that reviews, validates, and fixes code
     """
-    try:
-        event_queue = state.get("event_queue")
-        sandbox = state.get("sandbox")
+    configurable = config.get("configurable", {})
+    event_queue = configurable.get("event_queue")
+    sandbox = configurable.get("sandbox")
 
+    try:
         if not sandbox:
             raise Exception("Sandbox not available")
 
@@ -531,32 +549,48 @@ async def code_validator_node(state: GraphState) -> GraphState:
             )
 
         project_id = state.get("project_id", "")
-        base_tools = create_tools_with_context(sandbox, event_queue, project_id)
-
-        validator_prompt = VALIDATOR_PROMPT
+        validation_results = {"errors": [], "summary": ""}
+        base_tools = create_tools_with_context(
+            sandbox, event_queue, project_id,
+            validation_results=validation_results,
+            include_test_build=False,
+        )
 
         messages = [
-            SystemMessage(
-                content="You are a Code Validator Agent. Review and fix all code issues."
-            ),
-            HumanMessage(content=validator_prompt),
+            SystemMessage(content=VALIDATOR_PROMPT),
+            HumanMessage(content="Begin your validation pass now. Start with check_missing_packages()."),
         ]
 
-        validator_agent = create_react_agent(llm_gemini_flash, tools=base_tools)
-        config = {"recursion_limit": 50}
+        model_choice = state.get("model_choice", "gemini")
+        if model_choice == "claude" and llm_claude_haiku is not None:
+            validator_llm = llm_claude_haiku
+            print("Validator node: Using Claude Haiku 4.5")
+        else:
+            validator_llm = llm_gemini_flash
+            print("Validator node: Using Gemini 2.5 Flash")
+        validator_agent = create_react_agent(validator_llm, tools=base_tools)
+        agent_config = {"recursion_limit": 50}
 
         try:
             print(
                 f"Code validator: Starting agent execution with {len(base_tools)} tools"
             )
 
-            await _stream_agent_events(
-                validator_agent, messages, config, event_queue, project_id
+            await asyncio.wait_for(
+                _stream_agent_events(
+                    validator_agent, messages, agent_config, event_queue, project_id
+                ),
+                timeout=600,
             )
-            validation_errors = []
+
+            # Read what the agent actually reported via report_validation_result
+            raw_errors = validation_results.get("errors", [])
+            validation_errors = [
+                {"type": "code_error", "error": str(e)} for e in raw_errors
+            ]
 
             print(f"Code validator: Agent execution completed")
-            print("Code validator: Code review and dependency checking completed")
+            print(f"Code validator: {len(validation_errors)} errors remain after fixes")
 
             if event_queue:
                 safe_send_event(event_queue,
@@ -566,30 +600,28 @@ async def code_validator_node(state: GraphState) -> GraphState:
                     }
                 )
 
-            new_state = copy.deepcopy(state)
-            new_state["validation_errors"] = validation_errors
-            new_state["current_node"] = "code_validator"
+            update: dict = {
+                "validation_errors": validation_errors,
+                "current_node": "code_validator",
+                "execution_log": [
+                    {
+                        "node": "code_validator",
+                        "status": "completed",
+                        "validation_errors": validation_errors,
+                    }
+                ],
+            }
 
             if validation_errors:
-                retry_count = new_state.get("retry_count", {})
-                retry_count["validation_errors"] = (
-                    retry_count.get("validation_errors", 0) + 1
-                )
-                new_state["retry_count"] = retry_count
-                new_state["current_errors"] = {"validation_errors": validation_errors}
-                print(
-                    f"Code validator: Found {len(validation_errors)} validation errors"
-                )
+                current_retry = state.get("retry_count", {}).get("validation_errors", 0)
+                update["retry_count"] = {
+                    **state.get("retry_count", {}),
+                    "validation_errors": current_retry + 1,
+                }
+                update["current_errors"] = {"validation_errors": validation_errors}
+                print(f"Code validator: Found {len(validation_errors)} validation errors")
             else:
                 print("Code validator: No validation errors found")
-
-            new_state["execution_log"].append(
-                {
-                    "node": "code_validator",
-                    "status": "completed",
-                    "validation_errors": validation_errors,
-                }
-            )
 
             if event_queue:
                 safe_send_event(event_queue,
@@ -600,20 +632,10 @@ async def code_validator_node(state: GraphState) -> GraphState:
                     }
                 )
 
-            return new_state
+            return update
 
         except asyncio.TimeoutError:
             print("Code validator agent timed out after 10 minutes")
-
-            new_state = copy.deepcopy(state)
-            new_state["validation_errors"] = [
-                {
-                    "type": "timeout",
-                    "error": "Code validator timed out",
-                    "details": "Validation took too long",
-                }
-            ]
-            new_state["current_node"] = "code_validator"
 
             if event_queue:
                 safe_send_event(event_queue,
@@ -623,41 +645,55 @@ async def code_validator_node(state: GraphState) -> GraphState:
                     }
                 )
 
-            return new_state
+            timeout_errors = [
+                {"type": "timeout", "error": "Code validator timed out", "details": "Validation took too long"}
+            ]
+            current_retry = state.get("retry_count", {}).get("validation_errors", 0)
+            return {
+                "validation_errors": timeout_errors,
+                "current_node": "code_validator",
+                "retry_count": {
+                    **state.get("retry_count", {}),
+                    "validation_errors": current_retry + 1,
+                },
+                "current_errors": {"validation_errors": timeout_errors},
+                "execution_log": [
+                    {"node": "code_validator", "status": "timeout", "validation_errors": timeout_errors}
+                ],
+            }
 
     except Exception as e:
         error_msg = f"Code validator node error: {str(e)}"
         print(error_msg)
         traceback.print_exc()
 
-        new_state = copy.deepcopy(state)
-        new_state["current_node"] = "code_validator"
-        new_state["error_message"] = error_msg
-        new_state["validation_errors"] = [
-            {
-                "type": "validator_error",
-                "error": str(e),
-                "details": "Code validator crashed",
-            }
-        ]
-        new_state["execution_log"].append(
-            {"node": "code_validator", "status": "error", "error": error_msg}
-        )
-
         if event_queue:
             safe_send_event(event_queue, {"e": "code_validator_error", "message": error_msg})
 
-        return new_state
+        crash_errors = [{"type": "validator_error", "error": str(e), "details": "Code validator crashed"}]
+        current_retry = state.get("retry_count", {}).get("validation_errors", 0)
+        return {
+            "current_node": "code_validator",
+            "error_message": error_msg,
+            "validation_errors": crash_errors,
+            "retry_count": {
+                **state.get("retry_count", {}),
+                "validation_errors": current_retry + 1,
+            },
+            "current_errors": {"validation_errors": crash_errors},
+            "execution_log": [{"node": "code_validator", "status": "error", "error": error_msg}],
+        }
 
 
-async def application_checker_node(state: GraphState) -> GraphState:
+async def application_checker_node(state: GraphState, config: RunnableConfig) -> dict:
     """
     Application Checker node: Checks if the application is running and captures errors
     """
-    try:
-        event_queue = state.get("event_queue")
-        sandbox = state.get("sandbox")
+    configurable = config.get("configurable", {})
+    event_queue = configurable.get("event_queue")
+    sandbox = configurable.get("sandbox")
 
+    try:
         if not sandbox:
             raise Exception("Sandbox not available")
 
@@ -671,12 +707,8 @@ async def application_checker_node(state: GraphState) -> GraphState:
 
         runtime_errors = []
 
-        print(
-            "Application checker: Skipping dev server checks - environment is pre-configured"
-        )
-
         try:
-            # Check if main files exist
+            # Stage 1: essential files exist
             main_files = ["src/App.jsx", "src/main.jsx", "package.json"]
             missing_files = []
 
@@ -696,6 +728,39 @@ async def application_checker_node(state: GraphState) -> GraphState:
             else:
                 print("Application checker: All essential files present")
 
+                # Stage 2: Vite dev server is actually serving
+                # The sandbox runs Vite on port 5173 continuously; if it crashed
+                # (e.g. due to a JSX syntax error that slipped past the validator)
+                # curl will get a non-200 or a connection-refused.
+                try:
+                    vite_result = await sandbox.commands.run(
+                        "curl -s -o /dev/null -w '%{http_code}' --max-time 10 http://localhost:5173",
+                        cwd="/home/user/react-app",
+                    )
+                    http_code = vite_result.stdout.strip()
+                    if http_code == "200":
+                        print("Application checker: Vite dev server is responding (HTTP 200)")
+                    else:
+                        print(f"Application checker: Vite dev server returned HTTP {http_code}")
+                        runtime_errors.append(
+                            {
+                                "type": "vite_not_serving",
+                                "error": (
+                                    f"Vite dev server is not serving correctly (HTTP {http_code}). "
+                                    "The app likely has a syntax error or crashes on startup. "
+                                    "Check src/App.jsx and src/main.jsx for errors."
+                                ),
+                            }
+                        )
+                except Exception as e:
+                    print(f"Application checker: Vite server check failed: {e}")
+                    runtime_errors.append(
+                        {
+                            "type": "vite_check_failed",
+                            "error": f"Could not reach Vite dev server: {str(e)}",
+                        }
+                    )
+
         except Exception as e:
             runtime_errors.append(
                 {
@@ -704,29 +769,28 @@ async def application_checker_node(state: GraphState) -> GraphState:
                 }
             )
 
-        new_state = copy.deepcopy(state)
-        new_state["runtime_errors"] = runtime_errors
-        new_state["current_node"] = "application_checker"
+        update: dict = {
+            "runtime_errors": runtime_errors,
+            "current_node": "application_checker",
+            "execution_log": [
+                {
+                    "node": "application_checker",
+                    "status": "completed",
+                    "runtime_errors": runtime_errors,
+                }
+            ],
+        }
 
         if runtime_errors:
-            retry_count = new_state.get("retry_count", {})
-            retry_count["runtime_errors"] = retry_count.get("runtime_errors", 0) + 1
-            new_state["retry_count"] = retry_count
-
-            new_state["current_errors"] = {"runtime_errors": runtime_errors}
-        else:
-            new_state["success"] = True
-            print(
-                "Application checker: No runtime errors found - setting success to True"
-            )
-
-        new_state["execution_log"].append(
-            {
-                "node": "application_checker",
-                "status": "completed",
-                "runtime_errors": runtime_errors,
+            current_retry = state.get("retry_count", {}).get("runtime_errors", 0)
+            update["retry_count"] = {
+                **state.get("retry_count", {}),
+                "runtime_errors": current_retry + 1,
             }
-        )
+            update["current_errors"] = {"runtime_errors": runtime_errors}
+        else:
+            update["success"] = True
+            print("Application checker: No runtime errors found - setting success to True")
 
         if event_queue:
             safe_send_event(event_queue,
@@ -737,23 +801,20 @@ async def application_checker_node(state: GraphState) -> GraphState:
                 }
             )
 
-        return new_state
+        return update
 
     except Exception as e:
         error_msg = f"Application checker node error: {str(e)}"
         print(error_msg)
 
-        new_state = copy.deepcopy(state)
-        new_state["current_node"] = "application_checker"
-        new_state["error_message"] = error_msg
-        new_state["execution_log"].append(
-            {"node": "application_checker", "status": "error", "error": error_msg}
-        )
-
         if event_queue:
             safe_send_event(event_queue, {"e": "app_check_error", "message": error_msg})
 
-        return new_state
+        return {
+            "current_node": "application_checker",
+            "error_message": error_msg,
+            "execution_log": [{"node": "application_checker", "status": "error", "error": error_msg}],
+        }
 
 
 def should_retry_builder_for_validation(state: GraphState) -> str:

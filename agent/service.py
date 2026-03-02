@@ -31,7 +31,7 @@ class Service:
         self.sandboxes: Dict[str, AsyncSandbox] = {}
         self.workflow = get_workflow()
         self.project_timestamps: Dict[str, float] = {}
-        self.sandbox_timeout = 1800 
+        self.sandbox_timeout = 1800
         self.storage_base_path = os.path.join(
             os.path.dirname(__file__), "..", "projects"
         )
@@ -39,7 +39,7 @@ class Service:
 
     async def get_e2b_sandbox(self, id: str) -> AsyncSandbox:
         """Get or create E2B sandbox for project"""
-        
+
         current_time = time.time()
 
         # Check if sandbox exists and is still valid
@@ -53,37 +53,76 @@ class Service:
                 print(f"Extended timeout for existing sandbox: {id}")
                 return self.sandboxes[id]
             else:
-                # Sandbox expired, clean up
+                # Sandbox expired, clean up. The E2B sandbox may already be
+                # dead server-side, so kill() is best-effort — don't let it
+                # crash the recreation path if it throws.
                 print(f"Sandbox expired for project {id}, recreating...")
-                await self.sandboxes[id].kill()
+                try:
+                    await self.sandboxes[id].kill()
+                except Exception as kill_err:
+                    print(f"Failed to kill expired sandbox (likely already dead): {kill_err}")
                 del self.sandboxes[id]
 
-        # Create new sandbox
-        print(f"Initializing new sandbox for project id = {id}")
+        # Cache miss — try to reconnect to an existing E2B sandbox before
+        # creating a new one. Reconnect succeeds when the server restarted
+        # but the E2B sandbox is still alive within its 30-min TTL.
+        sandbox, is_new = await self._try_reconnect_sandbox(id)
+        self.sandboxes[id] = sandbox
+        await sandbox.set_timeout(1800)
+        self.project_timestamps[id] = current_time
+        print(f"Sandbox ready for project {id} (new={is_new})")
+
+        if is_new:
+            # Only restore files into a freshly-created sandbox; a reconnected
+            # sandbox already has all files from the previous session.
+            await self._restore_files_from_disk(id, sandbox)
+
+        return sandbox
+
+    async def _try_reconnect_sandbox(self, project_id: str) -> tuple:
+        """Reconnect to a previous sandbox if its ID is stored in metadata,
+        otherwise create a fresh one.
+
+        Returns (sandbox, is_new) where is_new=False means the sandbox is
+        already populated with files and does NOT need _restore_files_from_disk.
+        """
+        metadata_file = os.path.join(self.storage_base_path, project_id, "metadata.json")
+        sandbox_id = None
+        if os.path.exists(metadata_file):
+            try:
+                with open(metadata_file, "r") as f:
+                    stored = json.load(f)
+                sandbox_id = stored.get("sandbox_id")
+            except Exception as e:
+                print(f"Could not read metadata for sandbox reconnect: {e}")
+
+        if sandbox_id:
+            try:
+                print(f"Attempting to reconnect to sandbox {sandbox_id} for project {project_id}")
+                sandbox = await AsyncSandbox.reconnect(sandbox_id)
+                print(f"Reconnected to existing sandbox {sandbox_id}")
+                return sandbox, False
+            except Exception as e:
+                print(f"Sandbox reconnect failed (likely expired): {e}")
+
+        # Fallback: create a fresh sandbox
+        print(f"Creating new sandbox for project {project_id}")
         if TEMPLATE_ID:
             print(f"Using custom E2B template: {TEMPLATE_ID}")
-            self.sandboxes[id] = await AsyncSandbox.create(
-                template=TEMPLATE_ID, timeout=1800
-            )
+            sandbox = await AsyncSandbox.create(template=TEMPLATE_ID, timeout=1800)
         else:
-            print("Using default E2B template (no custom template configured)")
-            self.sandboxes[id] = await AsyncSandbox.create(
-                timeout=1800
-            )
-        await self.sandboxes[id].set_timeout(1800)
-        self.project_timestamps[id] = current_time
-        print("Sandbox created with react environment")
-
-        # Restore files if we have them stored on disk
-        await self._restore_files_from_disk(id, self.sandboxes[id])
-
-        return self.sandboxes[id]
+            print("Using default E2B template")
+            sandbox = await AsyncSandbox.create(timeout=1800)
+        return sandbox, True
 
     async def close_sandbox(self, id: str):
         """Close and cleanup E2B sandbox"""
         if id in self.sandboxes:
             sandbox = self.sandboxes.pop(id)
-            await sandbox.kill()
+            try:
+                await sandbox.kill()
+            except Exception as kill_err:
+                print(f"Failed to kill sandbox {id} (likely already dead): {kill_err}")
             print(f"closed sandbox: {id}")
 
     async def _restore_files_from_disk(self, project_id: str, sandbox: AsyncSandbox):
@@ -106,22 +145,19 @@ class Service:
         files = metadata.get("files", [])
         print(f"Restoring {len(files)} files for project {project_id}")
 
-        for file_path in files:
+        async def write_one(file_path: str):
             try:
-                # Read from disk
                 local_file = os.path.join(project_dir, file_path.replace("/", "_"))
                 if os.path.exists(local_file):
                     with open(local_file, "r", encoding="utf-8") as f:
                         content = f.read()
-
-                    # Write to sandbox
-                    full_path = f"/home/user/react-app/{file_path}"
-                    await sandbox.files.write(full_path, content)
+                    await sandbox.files.write(f"/home/user/react-app/{file_path}", content)
                 else:
                     print(f"Local file not found: {local_file}")
             except Exception as e:
                 print(f"Failed to restore {file_path}: {e}")
 
+        await asyncio.gather(*[write_one(p) for p in files])
         print(f"File restoration complete for project {project_id}")
 
         # Clean Vite cache to prevent permission issues
@@ -134,34 +170,35 @@ class Service:
             print(f"Failed to clean Vite cache: {e}")
 
     async def _save_conversation_history(
-        self, project_id: str, user_prompt: str, success: bool
+        self, project_id: str, user_prompt: str, success: bool,
+        files_created: list = None,
     ):
-        """Save conversation history to context for future reference"""
+        """Save conversation history and merge newly created files into context.json."""
         try:
-            
-
             # Load existing context
             context = load_json_store(project_id, "context.json")
 
-            # Get or initialize conversation history
+            # Update conversation history
             conversation_history = context.get("conversation_history", [])
-
-            # Add new conversation entry
-            conversation_entry = {
+            conversation_history.append({
                 "timestamp": time.time(),
                 "user_prompt": user_prompt,
                 "success": success,
                 "date": datetime.now().isoformat(),
-            }
-
-            conversation_history.append(conversation_entry)
-
+            })
             # Keep only last 10 conversations to avoid bloat
             if len(conversation_history) > 10:
                 conversation_history = conversation_history[-10:]
-
-            # Update context
             context["conversation_history"] = conversation_history
+
+            # Merge newly created files into the files_created list.
+            # Uses dict.fromkeys to deduplicate while preserving insertion order;
+            # existing files from previous sessions are kept so the planner always
+            # sees the full project file count, not just the current session's files.
+            if files_created:
+                existing = context.get("files_created", [])
+                context["files_created"] = list(dict.fromkeys(existing + files_created))
+
             save_json_store(project_id, "context.json", context)
 
             print(f"Saved conversation history for project {project_id}")
@@ -170,66 +207,57 @@ class Service:
             print(f"Failed to save conversation history: {e}")
 
     async def snapshot_project_files(self, project_id: str):
-        """Snapshot all source files from sandbox to disk"""
+        """Snapshot all source files from sandbox to disk.
 
+        Uses a single find command + concurrent asyncio.gather reads instead of
+        the previous per-path type-check loop, reducing wall time from O(N*rtt)
+        to O(1*rtt + N*parallel_rtt).  Also persists sandbox_id so the service
+        can reconnect to this sandbox after a server restart instead of creating a new one.
+        """
         if project_id not in self.sandboxes:
             return
 
         sandbox = self.sandboxes[project_id]
-
         project_dir = os.path.join(self.storage_base_path, project_id)
         os.makedirs(project_dir, exist_ok=True)
 
-        paths_to_snapshot = [
-            "src",
-            "public",
-            "package.json",
-            "index.html",
+        # Collect all relevant file paths with a single shell command
+        find_result = await sandbox.commands.run(
+            "find src public -type f 2>/dev/null; "
+            "test -f package.json && echo package.json; "
+            "test -f index.html && echo index.html",
+            cwd="/home/user/react-app",
+        )
+        file_paths = [
+            p.strip()
+            for p in find_result.stdout.strip().split("\n")
+            if p.strip() and not p.startswith(".")
         ]
 
-        files_stored = []
+        if not file_paths:
+            print(f"No files found to snapshot for project {project_id}")
+            return
 
-        for path in paths_to_snapshot:
+        # Read all files concurrently instead of serially
+        async def read_and_save(file_path: str):
             try:
-                full_path = f"/home/user/react-app/{path}"
-                result = await sandbox.commands.run(
-                    f"test -f {full_path} && echo 'file' || test -d {full_path} && echo 'dir'",
-                    cwd="/home/user/react-app",
-                )
-
-                if "file" in result.stdout:
-                    content = await sandbox.files.read(full_path)
-                    local_file = os.path.join(project_dir, path.replace("/", "_"))
-                    with open(local_file, "w", encoding="utf-8") as f:
-                        f.write(content)
-                    files_stored.append(path)
-
-                elif "dir" in result.stdout:
-                    find_result = await sandbox.commands.run(
-                        f"find {path} -type f", cwd="/home/user/react-app"
-                    )
-                    file_paths = find_result.stdout.strip().split("\n")
-
-                    for file_path in file_paths:
-                        if file_path and not file_path.startswith("."):
-                            try:
-                                content = await sandbox.files.read(
-                                    f"/home/user/react-app/{file_path}"
-                                )
-                                local_file = os.path.join(
-                                    project_dir, file_path.replace("/", "_")
-                                )
-                                with open(local_file, "w", encoding="utf-8") as f:
-                                    f.write(content)
-                                files_stored.append(file_path)
-                            except Exception as e:
-                                print(f"Failed to snapshot {file_path}: {e}")
+                content = await sandbox.files.read(f"/home/user/react-app/{file_path}")
+                local_file = os.path.join(project_dir, file_path.replace("/", "_"))
+                with open(local_file, "w", encoding="utf-8") as f:
+                    f.write(content)
+                return file_path
             except Exception as e:
-                print(f"Failed to snapshot {path}: {e}")
+                print(f"Failed to snapshot {file_path}: {e}")
+                return None
 
-        # Save metadata
+        results = await asyncio.gather(*[read_and_save(p) for p in file_paths])
+        files_stored = [p for p in results if p is not None]
+
+        # Save metadata — sandbox_id lets _try_reconnect_sandbox reconnect to
+        # this sandbox after a server restart instead of creating a new one.
         metadata = {
             "project_id": project_id,
+            "sandbox_id": sandbox.sandbox_id,
             "files": files_stored,
             "timestamp": time.time(),
         }
@@ -239,36 +267,7 @@ class Service:
 
         print(f"Snapshotted {len(files_stored)} files for project {project_id} to disk")
 
-    async def _store_message(
-        self,
-        chat_id: str,
-        role: str,
-        content: str,
-        event_type: str = None,
-        tool_calls: list = None,
-    ):
-        """Helper to store a message in the database"""
-        async with AsyncSessionLocal() as db:
-            message = Message(
-                id=str(uuid.uuid4()),
-                chat_id=chat_id,
-                role=role,
-                content=content,
-                event_type=event_type,
-                tool_calls=tool_calls,
-            )
-            db.add(message)
-            await db.commit()
-
-    def _send_event(self, event_queue: asyncio.Queue, data: dict):
-        """Helper to safely send event to queue"""
-        try:
-            event_queue.put_nowait(data)
-        except Exception as e:
-            print(f"Failed to queue event: {e}")
-            return
-
-    async def run_agent_stream(self, prompt: str, id: str, event_queue: asyncio.Queue):
+    async def run_agent_stream(self, prompt: str, id: str, event_queue: asyncio.Queue, model_choice: str = "gemini", is_first_message: bool = True):
         """
         Run the LangGraph multi-agent workflow
         """
@@ -297,10 +296,10 @@ class Service:
                     "runtime_errors": 0,
                 },
                 "max_retries": 3,
-                "sandbox": sandbox,
-                "event_queue": event_queue,
                 "current_node": "",
                 "execution_log": [],
+                "model_choice": model_choice,
+                "is_first_message": is_first_message,
                 "success": False,
                 "error_message": None,
             }
@@ -308,22 +307,36 @@ class Service:
             print(f"Starting LangGraph workflow with prompt: {prompt}")
             print(f"Project ID: {id}")
 
-            # Run the workflow
-            final_state = await self.workflow.ainvoke(initial_state)
+            # Run the workflow — sandbox and event_queue travel via config, not state,
+            # so they never block LangGraph checkpointing.
+            final_state = await self.workflow.ainvoke(
+                initial_state,
+                config={
+                    "configurable": {"sandbox": sandbox, "event_queue": event_queue},
+                    "recursion_limit": 100,
+                },
+            )
 
             # Get the final URL
             host = sandbox.get_host(port=5173)
             url = f"https://{host}"
 
+            # files_created accumulates across retries via operator.add;
+            # deduplicate while preserving first-seen order before sending.
+            all_files = final_state.get('files_created', [])
+            unique_files = list(dict.fromkeys(all_files))
+
             print(f"\nWorkflow completed. Project live at: {url}\n")
             print(f"Workflow success: {final_state.get('success')}")
-            print(f"Files created: {final_state.get('files_created')}")
+            print(f"Files created: {unique_files}")
 
-            # Save conversation history for future context
+            # Save conversation history for future context, including the
+            # deduplicated file list so planner sees correct file count next session.
             await self._save_conversation_history(
                 project_id=id,
                 user_prompt=prompt,
-                success=final_state.get('success', False)
+                success=final_state.get('success', False),
+                files_created=unique_files,
             )
 
             # Snapshot files to local disk for persistence
@@ -351,17 +364,17 @@ class Service:
                 "e": "completed",
                 "url": url,
                 "success": final_state.get('success'),
-                "files_created": final_state.get('files_created', [])
+                "files_created": unique_files,
             })
 
         except Exception as e:
             print(f"Error during LangGraph workflow execution: {e}")
             print(f"Error type: {type(e)}")
             print(f"Error details: {str(e)}")
-            
+
 
             traceback.print_exc()
-            
+
             try:
                 event_queue.put_nowait({
                     "e": "error",
