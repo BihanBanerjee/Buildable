@@ -28,8 +28,9 @@ class UserResponse(BaseModel):
     name: str
     created_at: datetime
     last_query_at: Optional[datetime] = None
-    tokens_remaining: int = 2
+    tokens_remaining: int = 5
     tokens_reset_at: Optional[datetime] = None
+    is_unlimited: bool = False
 
 
 class RefreshTokenRequest(BaseModel):

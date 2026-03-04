@@ -148,7 +148,7 @@ export function handleSSEMessage(event: MessageEvent, handlers: SSEHandlers) {
       }
     }
 
-    if (data.type === "history" && data.messages) {
+    if (data.e === "history" && data.messages) {
       const consolidatedMessages = handlers.consolidateMessages(data.messages);
       handlers.setMessages(consolidatedMessages);
       if (data.app_url) {

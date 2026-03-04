@@ -165,7 +165,16 @@ async def refresh_token(
 @router.get("/me", response_model=UserResponse)
 async def get_me(current_user: User = Depends(get_current_user)):
     """Get current user info"""
-    return current_user
+    return UserResponse(
+        id=current_user.id,
+        email=current_user.email,
+        name=current_user.name,
+        created_at=current_user.created_at,
+        last_query_at=current_user.last_query_at,
+        tokens_remaining=current_user.tokens_remaining,
+        tokens_reset_at=current_user.tokens_reset_at,
+        is_unlimited=current_user.email == "banerjeebihan456@gmail.com",
+    )
 
 
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)

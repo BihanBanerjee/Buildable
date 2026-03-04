@@ -24,8 +24,8 @@ class User(Base):
         DateTime(timezone=True), nullable=True, default=None
     )
 
-    # Token/Credits System - user gets 2 tokens per day
-    tokens_remaining: Mapped[int] = mapped_column(Integer, default=2)
+    # Token/Credits System - user gets 5 tokens per hour
+    tokens_remaining: Mapped[int] = mapped_column(Integer, default=5)
     tokens_reset_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True, default=None
     )
@@ -47,11 +47,11 @@ class User(Base):
         if self.email == "banerjeebihan456@gmail.com":
             return True
         
-        # Check if we need to reset tokens (24 hours passed)
+        # Check if we need to reset tokens (1 hour passed)
         if self.tokens_reset_at is None or datetime.now(timezone.utc) >= self.tokens_reset_at:
             # Reset tokens
-            self.tokens_remaining = 2
-            self.tokens_reset_at = datetime.now(timezone.utc) + timedelta(hours=24)
+            self.tokens_remaining = 5
+            self.tokens_reset_at = datetime.now(timezone.utc) + timedelta(hours=1)
             return True
         
         return self.tokens_remaining > 0
@@ -63,8 +63,8 @@ class User(Base):
             return True
         
         if self.tokens_reset_at is None or datetime.now(timezone.utc) >= self.tokens_reset_at:
-            self.tokens_remaining = 2
-            self.tokens_reset_at = datetime.now(timezone.utc) + timedelta(hours=24)
+            self.tokens_remaining = 5
+            self.tokens_reset_at = datetime.now(timezone.utc) + timedelta(hours=1)
         
         if self.tokens_remaining > 0:
             self.tokens_remaining -= 1

@@ -28,7 +28,7 @@ export function ChatNavbar({
                 <span className="text-muted-foreground">{userData?.email}</span>
                 <span className="text-border">•</span>
                 <span className="text-foreground font-medium">
-                  {userData?.tokens_remaining} tokens
+                  {userData?.is_unlimited ? "∞ unlimited" : `${userData?.tokens_remaining} tokens`}
                 </span>
               </div>
               <Button variant="outline" size="sm" onClick={onSignOut}>

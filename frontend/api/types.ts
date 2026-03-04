@@ -3,6 +3,7 @@ export interface UserData {
   email: string;
   name: string;
   tokens_remaining: number;
+  is_unlimited?: boolean;
 }
 
 export interface LoginResponse {
