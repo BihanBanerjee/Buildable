@@ -357,9 +357,9 @@ def generate_build_summary(files_created: list, files_modified: list, plan: dict
         app_name = overview.get("title") or overview.get("name") or ""
 
     if app_name:
-        lines.append(f"Your **{app_name}** is ready!")
+        lines.append(f"**{app_name}** build complete. Running final checks...")
     else:
-        lines.append("Your application is ready!")
+        lines.append("Build complete. Running final checks...")
 
     total = len(files_created) + len(files_modified)
     if total > 0:

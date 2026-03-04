@@ -12,7 +12,7 @@ import {
 } from "@/components/ui/sheet";
 import { chatApi } from "@/api/chat";
 import type { Project } from "@/api/types";
-import { FolderOpen, Clock, Loader2 } from "lucide-react";
+import { FolderOpen, Clock, Loader2, Trash2 } from "lucide-react";
 
 interface ProjectsListProps {
   trigger?: React.ReactNode;
@@ -22,6 +22,8 @@ export function ProjectsList({ trigger }: ProjectsListProps) {
   const [projects, setProjects] = useState<Project[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [isOpen, setIsOpen] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [confirmingId, setConfirmingId] = useState<string | null>(null);
   const router = useRouter();
 
   useEffect(() => {
@@ -45,6 +47,33 @@ export function ProjectsList({ trigger }: ProjectsListProps) {
   const handleProjectClick = (projectId: string) => {
     setIsOpen(false);
     router.push(`/chat/${projectId}`);
+  };
+
+  const handleDeleteClick = (e: React.MouseEvent, projectId: string) => {
+    e.stopPropagation();
+    setConfirmingId(projectId);
+  };
+
+  const handleDeleteCancel = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setConfirmingId(null);
+  };
+
+  const handleDeleteConfirm = async (e: React.MouseEvent, projectId: string) => {
+    e.stopPropagation();
+    setConfirmingId(null);
+    setDeletingId(projectId);
+    try {
+      await chatApi.deleteProject(projectId);
+      setProjects((prev) => prev.filter((p) => p.id !== projectId));
+      if (window.location.pathname.includes(projectId)) {
+        router.push("/chat");
+      }
+    } catch (error) {
+      console.error("Failed to delete project:", error);
+    } finally {
+      setDeletingId(null);
+    }
   };
 
   const formatDate = (dateString: string) => {
@@ -93,24 +122,58 @@ export function ProjectsList({ trigger }: ProjectsListProps) {
           ) : (
             <div className="space-y-2 max-h-[calc(100vh-100px)] overflow-y-auto pr-1">
               {projects.map((project) => (
-                <button
+                <div
                   key={project.id}
-                  onClick={() => handleProjectClick(project.id)}
-                  className="w-full text-left p-4 rounded-lg bg-secondary/50 hover:bg-secondary border border-border hover:border-emerald-900/40 transition-all"
+                  className="group relative w-full text-left p-4 rounded-lg bg-secondary/50 hover:bg-secondary border border-border hover:border-emerald-900/40 transition-all cursor-pointer"
+                  onClick={() => confirmingId === project.id ? null : handleProjectClick(project.id)}
                 >
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="flex-1 min-w-0">
-                      <h3 className="text-foreground font-medium text-sm truncate mb-1">
-                        {project.title}
-                      </h3>
-                      <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                        <Clock size={11} />
-                        <span>{formatDate(project.created_at)}</span>
+                  {confirmingId === project.id ? (
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="text-sm text-foreground/80">Delete this project?</p>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={handleDeleteCancel}
+                          className="px-2.5 py-1 text-xs rounded-md text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors"
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          onClick={(e) => handleDeleteConfirm(e, project.id)}
+                          className="px-2.5 py-1 text-xs rounded-md bg-red-500/15 text-red-400 hover:bg-red-500/25 transition-colors"
+                        >
+                          Delete
+                        </button>
                       </div>
                     </div>
-                    <span className="text-muted-foreground text-sm">→</span>
-                  </div>
-                </button>
+                  ) : (
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="flex-1 min-w-0">
+                        <h3 className="text-foreground font-medium text-sm truncate mb-1">
+                          {project.title}
+                        </h3>
+                        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                          <Clock size={11} />
+                          <span>{formatDate(project.created_at)}</span>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={(e) => handleDeleteClick(e, project.id)}
+                          disabled={deletingId === project.id}
+                          className="opacity-0 group-hover:opacity-100 p-1 rounded text-muted-foreground hover:text-red-400 hover:bg-red-500/10 transition-all"
+                          title="Delete project"
+                        >
+                          {deletingId === project.id ? (
+                            <Loader2 size={14} className="animate-spin" />
+                          ) : (
+                            <Trash2 size={14} />
+                          )}
+                        </button>
+                        <span className="text-muted-foreground text-sm">→</span>
+                      </div>
+                    </div>
+                  )}
+                </div>
               ))}
             </div>
           )}

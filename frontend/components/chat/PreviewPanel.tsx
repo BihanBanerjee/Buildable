@@ -1,4 +1,4 @@
-import { Eye, FileCode, Globe, ExternalLink } from "lucide-react";
+import { Eye, FileCode, Globe, ExternalLink, RefreshCw } from "lucide-react";
 import { useState } from "react";
 import { FileViewer } from "./FileViewer";
 
@@ -8,6 +8,9 @@ interface PreviewPanelProps {
   previewWidth: number;
   files: string[];
   projectId: string;
+  sandboxActive: boolean;
+  isRestartingSandbox: boolean;
+  onRestartSandbox: () => void;
 }
 
 type TabType = "preview" | "files";
@@ -18,6 +21,9 @@ export function PreviewPanel({
   previewWidth,
   files,
   projectId,
+  sandboxActive,
+  isRestartingSandbox,
+  onRestartSandbox,
 }: PreviewPanelProps) {
   const [activeTab, setActiveTab] = useState<TabType>("preview");
 
@@ -76,6 +82,37 @@ export function PreviewPanel({
                   <p className="text-muted-foreground text-sm">
                     Waiting for app to start...
                   </p>
+                </div>
+              </div>
+            ) : isRestartingSandbox ? (
+              <div className="w-full h-full rounded-xl border border-border flex items-center justify-center">
+                <div className="text-center">
+                  <div className="animate-spin rounded-full h-10 w-10 border-2 border-primary border-t-transparent mx-auto mb-4" />
+                  <p className="text-muted-foreground text-sm font-medium">
+                    Restarting sandbox...
+                  </p>
+                  <p className="text-muted-foreground/60 text-xs mt-1">
+                    Restoring files and starting Vite
+                  </p>
+                </div>
+              </div>
+            ) : appUrl && !sandboxActive ? (
+              <div className="w-full h-full rounded-xl border border-border flex items-center justify-center">
+                <div className="text-center">
+                  <RefreshCw className="w-10 h-10 text-muted-foreground/20 mx-auto mb-3" />
+                  <p className="text-foreground/80 text-sm font-medium mb-1">
+                    Preview has expired
+                  </p>
+                  <p className="text-muted-foreground/60 text-xs mb-4">
+                    The sandbox timed out after 30 minutes of inactivity
+                  </p>
+                  <button
+                    onClick={onRestartSandbox}
+                    className="flex items-center gap-2 px-4 py-2 text-xs font-medium bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 transition-colors mx-auto"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    Restart Preview
+                  </button>
                 </div>
               </div>
             ) : appUrl ? (

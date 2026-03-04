@@ -11,7 +11,7 @@ import traceback
 import uuid
 from fastapi import Depends
 
-from sqlalchemy import select
+from sqlalchemy import select, delete
 from agent.service import agent_service
 from auth.router import router
 from db.models import User, Chat, Message
@@ -121,7 +121,7 @@ async def create_project(
         return JSONResponse(
             {
                 "error": "No tokens remaining",
-                "message": f"You have used all your tokens. You get 2 tokens per 24 hours. Reset in {hours_remaining:.1f} hours.",
+                "message": f"You have used all your tokens. You get 5 tokens per hour. Reset in {hours_remaining:.1f} hours.",
                 "tokens_remaining": current_user.tokens_remaining,
                 "reset_in_hours": hours_remaining
             },
@@ -304,16 +304,72 @@ async def get_file_content(
     if not chat or chat.user_id != current_user.id:
         raise HTTPException(status_code=403, detail="Not authorized to access this project")
 
+    # Try live sandbox first
     sandbox = agent_service.sandboxes.get(id)
-    if not sandbox:
-        raise HTTPException(status_code=404, detail="Project sandbox not found or not active.")
+    if sandbox:
+        try:
+            full_path = f"/home/user/react-app/{file_path}"
+            content = await sandbox.files.read(full_path)
+            return {"file_path": file_path, "content": content}
+        except Exception as e:
+            print(f"Live sandbox read failed for {file_path}, falling back to disk: {e}")
+
+    # Fall back to disk snapshot (sandbox expired or read failed)
+    disk_file = os.path.join(
+        agent_service.storage_base_path, id, file_path.replace("/", "_")
+    )
+    if os.path.exists(disk_file):
+        with open(disk_file, "r", encoding="utf-8") as f:
+            content = f.read()
+        return {"file_path": file_path, "content": content}
+
+    raise HTTPException(status_code=404, detail="File not found in sandbox or disk snapshot.")
+
+
+@app.post("/projects/{id}/restart")
+async def restart_project_sandbox(
+    id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Recreate the E2B sandbox for an expired project, restore files, and restart Vite."""
+    result = await db.execute(select(Chat).where(Chat.id == id))
+    chat = result.scalar_one_or_none()
+    if not chat or chat.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not authorized to access this project")
 
     try:
-        full_path = f"/home/user/react-app/{file_path}"
-        content = await sandbox.files.read(full_path)
-        return {"file_path": file_path, "content": content}
+        # Recreate (or reconnect to) the sandbox and restore files from disk
+        sandbox = await agent_service.get_e2b_sandbox(id)
+
+        # Ensure Vite is running — restoration doesn't start it automatically.
+        # pkill is best-effort; nohup forks to background so E2B returns
+        # exit code -1 (detached process) — both are safe to ignore.
+        try:
+            await sandbox.commands.run(
+                "pkill -f vite || true", cwd="/home/user/react-app"
+            )
+        except Exception:
+            pass
+        try:
+            await sandbox.commands.run(
+                "nohup npm run dev -- --host 0.0.0.0 > /tmp/vite.log 2>&1 &",
+                cwd="/home/user/react-app",
+            )
+        except Exception:
+            pass
+        await asyncio.sleep(10)
+
+        new_url = f"https://5173-{sandbox.sandbox_id}.e2b.app"
+
+        # Persist the new URL
+        chat.app_url = new_url
+        await db.commit()
+
+        return {"app_url": new_url}
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error reading file: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to restart sandbox: {str(e)}")
 
 
 @app.get("/projects/{id}/download")
@@ -352,6 +408,53 @@ async def download_all_files(
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error creating ZIP: {str(e)}")
+
+
+@app.delete("/projects/{id}")
+async def delete_project(
+    id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete a project — cancels active run, kills sandbox, removes disk files and DB records."""
+    result = await db.execute(select(Chat).where(Chat.id == id))
+    chat = result.scalar_one_or_none()
+    if not chat or chat.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not authorized to access this project")
+
+    # 1. Cancel active agent run
+    task = active_runs.pop(id, None)
+    if task and not task.done():
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+    # 2. Close SSE queue (drain any waiting consumers)
+    active_streams.pop(id, None)
+
+    # 3. Kill E2B sandbox (best-effort — may already be dead)
+    sandbox = agent_service.sandboxes.pop(id, None)
+    agent_service.project_timestamps.pop(id, None)
+    if sandbox:
+        try:
+            await sandbox.kill()
+        except Exception:
+            pass
+
+    # 4. Delete disk snapshot directory
+    project_dir = os.path.join(agent_service.storage_base_path, id)
+    if os.path.exists(project_dir):
+        import shutil
+        shutil.rmtree(project_dir, ignore_errors=True)
+
+    # 5. Delete DB records (messages first, then chat)
+    await db.execute(delete(Message).where(Message.chat_id == id))
+    await db.delete(chat)
+    await db.commit()
+
+    return {"status": "deleted", "project_id": id}
 
 
 @app.get("/projects")
@@ -498,7 +601,7 @@ async def send_message(
             status_code=403,
             detail={
                 "error": "No tokens remaining",
-                "message": f"You have used all your tokens. You get 2 tokens per 24 hours. Reset in {hours_remaining:.1f} hours.",
+                "message": f"You have used all your tokens. You get 5 tokens per hour. Reset in {hours_remaining:.1f} hours.",
                 "tokens_remaining": current_user.tokens_remaining,
                 "reset_in_hours": hours_remaining
             }

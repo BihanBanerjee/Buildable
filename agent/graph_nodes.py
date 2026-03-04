@@ -373,6 +373,40 @@ async def builder_node(state: GraphState, config: RunnableConfig) -> dict:
                 }
             )
 
+        # On first message: patch vite.config.js AND reset Home.jsx to a blank
+        # placeholder so the LLM doesn't mistake the starter template for existing
+        # project work and exit without writing any files.
+        is_first_message = state.get("is_first_message", True)
+        if is_first_message:
+            vite_config = (
+                "import { defineConfig } from 'vite'\n"
+                "import react from '@vitejs/plugin-react'\n"
+                "import tailwindcss from '@tailwindcss/vite'\n\n"
+                "export default defineConfig({\n"
+                "  plugins: [react(), tailwindcss()],\n"
+                "  server: {\n"
+                "    host: true,\n"
+                "    allowedHosts: true\n"
+                "  }\n"
+                "})\n"
+            )
+            home_placeholder = (
+                "// PLACEHOLDER — replace this entire file with the real application\n"
+                "export default function Home() {\n"
+                "  return <div>Building your app...</div>\n"
+                "}\n"
+            )
+            try:
+                await sandbox.files.write("/home/user/react-app/vite.config.js", vite_config)
+                print("INFO: Patched vite.config.js to support JSX in .js files")
+            except Exception as e:
+                print(f"WARNING: Failed to patch vite.config.js: {e}")
+            try:
+                await sandbox.files.write("/home/user/react-app/src/pages/Home.jsx", home_placeholder)
+                print("INFO: Reset Home.jsx to placeholder for clean build")
+            except Exception as e:
+                print(f"WARNING: Failed to reset Home.jsx: {e}")
+
         plan = state.get("plan", {})
         if plan:
             print("INFO: Plan Recieved")
@@ -733,6 +767,24 @@ async def application_checker_node(state: GraphState, config: RunnableConfig) ->
                 # (e.g. due to a JSX syntax error that slipped past the validator)
                 # curl will get a non-200 or a connection-refused.
                 try:
+                    # Ensure Vite is actually serving on port 5173.
+                    # npm install during the build kills the Vite process;
+                    # pgrep-based checks give false positives (matches npm cache entries),
+                    # so check the port directly instead.
+                    port_check = await sandbox.commands.run(
+                        "ss -tlnp 2>/dev/null | grep -q ':5173' && echo 'port_open' || echo 'port_closed'",
+                        cwd="/home/user/react-app",
+                    )
+                    if "port_closed" in port_check.stdout:
+                        print("Application checker: Port 5173 not listening — restarting Vite")
+                        await sandbox.commands.run(
+                            "nohup npm run dev -- --host 0.0.0.0 > /tmp/vite.log 2>&1 &",
+                            cwd="/home/user/react-app",
+                        )
+                        await asyncio.sleep(10)  # Give Vite time to start
+                    else:
+                        print("Application checker: Port 5173 is already open")
+
                     vite_result = await sandbox.commands.run(
                         "curl -s -o /dev/null -w '%{http_code}' --max-time 10 http://localhost:5173",
                         cwd="/home/user/react-app",

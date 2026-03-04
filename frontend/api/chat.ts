@@ -18,6 +18,10 @@ export const chatApi = {
     return response.data;
   },
 
+  deleteProject: async (projectId: string): Promise<void> => {
+    await apiClient.delete(`/projects/${projectId}`);
+  },
+
   checkUrlHealth: async (url: string): Promise<boolean> => {
     try {
       const response = await apiClient.head(url, { timeout: 5000 });

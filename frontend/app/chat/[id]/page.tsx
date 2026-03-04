@@ -34,6 +34,8 @@ export default function ChatIdPage() {
   const [currentTool, setCurrentTool] = useState<ActiveToolCall | null>(null);
   const [isCheckingUrl, setIsCheckingUrl] = useState(false);
   const [projectFiles, setProjectFiles] = useState<string[]>([]);
+  const [sandboxActive, setSandboxActive] = useState(true);
+  const [isRestartingSandbox, setIsRestartingSandbox] = useState(false);
 
   const eventSourceRef = useRef<EventSource | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -69,8 +71,24 @@ export default function ChatIdPage() {
       }>(`/projects/${chatId}/files`);
 
       setProjectFiles(response.data.files || []);
+      setSandboxActive(response.data.sandbox_active ?? true);
     } catch (error) {
       console.error("Error fetching files:", error);
+    }
+  };
+
+  const restartSandbox = async () => {
+    setIsRestartingSandbox(true);
+    try {
+      const response = await apiClient.post<{ app_url: string }>(
+        `/projects/${chatId}/restart`
+      );
+      setAppUrl(response.data.app_url);
+      setSandboxActive(true);
+    } catch (err) {
+      console.error("Failed to restart sandbox:", err);
+    } finally {
+      setIsRestartingSandbox(false);
     }
   };
 
@@ -339,6 +357,9 @@ export default function ChatIdPage() {
               previewWidth={previewWidth}
               files={projectFiles}
               projectId={chatId}
+              sandboxActive={sandboxActive}
+              isRestartingSandbox={isRestartingSandbox}
+              onRestartSandbox={restartSandbox}
             />
           )}
         </div>
