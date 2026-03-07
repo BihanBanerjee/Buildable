@@ -1,8 +1,11 @@
+import os
 from .base import Base
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional
 from sqlalchemy import Integer, String, DateTime, ForeignKey, Text, JSON
+
+ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "")
 
 
 class User(Base):
@@ -44,7 +47,7 @@ class User(Base):
     def can_make_query(self) -> bool:
         """Check if user can make a query based on rate limiting and tokens"""
         # Special user gets unlimited access
-        if self.email == "banerjeebihan456@gmail.com":
+        if ADMIN_EMAIL and self.email == ADMIN_EMAIL:
             return True
         
         # Check if we need to reset tokens (1 hour passed)
@@ -59,7 +62,7 @@ class User(Base):
 
     def use_token(self) -> bool:
         """Use one token and return True if successful, False if no tokens left"""
-        if self.email == "banerjeebihan456@gmail.com":
+        if ADMIN_EMAIL and self.email == ADMIN_EMAIL:
             return True
         
         if self.tokens_reset_at is None or datetime.now(timezone.utc) >= self.tokens_reset_at:
@@ -87,7 +90,7 @@ class User(Base):
 class Chat(Base):
     __tablename__ = "chats"
 
-    id: Mapped[int] = mapped_column(String(36), primary_key=True)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
     user_id: Mapped[int] = mapped_column(
         Integer, ForeignKey("users.id", ondelete="CASCADE")
     )
@@ -109,8 +112,8 @@ class Chat(Base):
 class Message(Base):
     __tablename__ = "messages"
 
-    id: Mapped[int] = mapped_column(String(36), primary_key=True)
-    chat_id: Mapped[int] = mapped_column(
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    chat_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("chats.id", ondelete="CASCADE")
     )
     role: Mapped[str] = mapped_column(String(50)) # 'user' or 'assistant'

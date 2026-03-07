@@ -126,7 +126,7 @@ async def create_project(
                 "tokens_remaining": current_user.tokens_remaining,
                 "reset_in_hours": hours_remaining
             },
-            status_code=403
+            status_code=429
         )
     
     # Use one token for this request
@@ -619,7 +619,7 @@ async def send_message(
                 "tokens_remaining": current_user.tokens_remaining,
                 "reset_in_hours": hours_remaining
             },
-            status_code=403
+            status_code=429
         )
 
     # Use one token

@@ -33,8 +33,8 @@ apiClient.interceptors.response.use(
         window.location.href = "/signin";
       }
     }
-    const errorMessage =
-      (error.response?.data as { detail?: string })?.detail || error.message;
+    const data = error.response?.data as { detail?: string; message?: string; error?: string } | undefined;
+    const errorMessage = data?.detail || data?.message || data?.error || error.message;
     return Promise.reject(new Error(errorMessage));
   },
 );

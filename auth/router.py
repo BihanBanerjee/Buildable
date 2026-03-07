@@ -1,8 +1,11 @@
+import os
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from db.models import User, RefreshToken
 from db.base import get_db
+
+ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "")
 from .schema import (
     UserLogin, UserResponse, UserRegister, Token, RefreshTokenRequest, RegisterResponse
 )
@@ -57,7 +60,7 @@ async def register_user(user: UserRegister, db: AsyncSession = Depends(get_db)):
         last_query_at=new_user.last_query_at,
         tokens_remaining=new_user.tokens_remaining,
         tokens_reset_at=new_user.tokens_reset_at,
-        is_unlimited=new_user.email == "banerjeebihan456@gmail.com",
+        is_unlimited=bool(ADMIN_EMAIL) and new_user.email == ADMIN_EMAIL,
     )
 
     # Create RegisterResponse with the correct structure
@@ -174,7 +177,7 @@ async def get_me(current_user: User = Depends(get_current_user)):
         last_query_at=current_user.last_query_at,
         tokens_remaining=current_user.tokens_remaining,
         tokens_reset_at=current_user.tokens_reset_at,
-        is_unlimited=current_user.email == "banerjeebihan456@gmail.com",
+        is_unlimited=bool(ADMIN_EMAIL) and current_user.email == ADMIN_EMAIL,
     )
 
 
