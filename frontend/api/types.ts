@@ -4,6 +4,7 @@ export interface UserData {
   name: string;
   tokens_remaining: number;
   is_unlimited?: boolean;
+  reset_in_hours?: number;
 }
 
 export interface LoginResponse {
