@@ -6,7 +6,12 @@ from datetime import timezone
 import hashlib
 import os
 
-SECRET_KEY = os.getenv("SECRET_KEY", "secret_key")
+SECRET_KEY = os.getenv("SECRET_KEY")
+if not SECRET_KEY:
+    raise RuntimeError(
+        "SECRET_KEY environment variable is not set. "
+        "Generate one with: python -c \"import secrets; print(secrets.token_hex(32))\""
+    )
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 REFRESH_TOKEN_EXPIRE_DAYS = 7
