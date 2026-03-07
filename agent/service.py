@@ -48,7 +48,7 @@ class Service:
             time_elapsed = current_time - last_access
 
             if time_elapsed < self.sandbox_timeout:
-                await self.sandboxes[id].set_timeout(1800)
+                await self.sandboxes[id].set_timeout(self.sandbox_timeout)
                 self.project_timestamps[id] = current_time
                 print(f"Extended timeout for existing sandbox: {id}")
                 return self.sandboxes[id]
@@ -68,7 +68,7 @@ class Service:
         # but the E2B sandbox is still alive within its 30-min TTL.
         sandbox, is_new = await self._try_reconnect_sandbox(id)
         self.sandboxes[id] = sandbox
-        await sandbox.set_timeout(1800)
+        await sandbox.set_timeout(self.sandbox_timeout)
         self.project_timestamps[id] = current_time
         print(f"Sandbox ready for project {id} (new={is_new})")
 
