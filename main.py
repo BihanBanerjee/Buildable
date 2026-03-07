@@ -192,13 +192,29 @@ async def create_project(
             )
         except Exception as e:
             print(f"Agent error: {e}")
+            traceback.print_exc()
+
+            try:
+                async with AsyncSessionLocal() as error_db:
+                    error_message = Message(
+                        id=str(uuid.uuid4()),
+                        chat_id=chat_id,
+                        role="assistant",
+                        content=f"Build failed: {str(e)}",
+                        event_type="error"
+                    )
+                    error_db.add(error_message)
+                    await error_db.commit()
+            except Exception as db_err:
+                print(f"Failed to store error message: {db_err}")
+
             try:
                 event_queue.put_nowait({
-                    "type": "error",
-                    "message": str(e)
+                    "e": "error",
+                    "message": f"Build failed: {str(e)}"
                 })
-            except:
-                pass
+            except Exception as queue_err:
+                print(f"Failed to send error to event queue: {queue_err}")
         finally:
             if chat_id in active_runs:
                 del active_runs[chat_id]
@@ -596,14 +612,14 @@ async def send_message(
     # Check token availability
     if not current_user.can_make_query():
         hours_remaining = current_user.get_time_until_reset()
-        raise HTTPException(
-            status_code=403,
-            detail={
+        return JSONResponse(
+            {
                 "error": "No tokens remaining",
                 "message": f"You have used all your tokens. You get 5 tokens per hour. Reset in {hours_remaining:.1f} hours.",
                 "tokens_remaining": current_user.tokens_remaining,
                 "reset_in_hours": hours_remaining
-            }
+            },
+            status_code=403
         )
 
     # Use one token

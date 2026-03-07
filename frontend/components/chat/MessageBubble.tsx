@@ -1,5 +1,5 @@
 import React from "react";
-import { Loader2, CheckCircle2 } from "lucide-react";
+import { Loader2, CheckCircle2, AlertCircle } from "lucide-react";
 
 interface ToolCall {
   name: string;
@@ -173,6 +173,20 @@ export function MessageBubble({ message, isLastMessage }: MessageBubbleProps) {
   const hasToolCalls = message.tool_calls && message.tool_calls.length > 0;
   const hasSummary = !!message.summary;
   const showThinking = !cleanContent && !hasToolCalls && isLastMessage;
+  const isError = message.event_type === "error";
+
+  if (isError) {
+    return (
+      <div className="flex justify-start">
+        <div className="max-w-2xl w-full bg-red-500/10 border border-red-500/20 rounded-lg p-4">
+          <div className="flex items-start gap-2">
+            <AlertCircle size={15} className="text-red-400 shrink-0 mt-0.5" />
+            <p className="text-sm text-red-400">{message.content}</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex justify-start">

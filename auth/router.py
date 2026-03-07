@@ -57,6 +57,7 @@ async def register_user(user: UserRegister, db: AsyncSession = Depends(get_db)):
         last_query_at=new_user.last_query_at,
         tokens_remaining=new_user.tokens_remaining,
         tokens_reset_at=new_user.tokens_reset_at,
+        is_unlimited=new_user.email == "banerjeebihan456@gmail.com",
     )
 
     # Create RegisterResponse with the correct structure

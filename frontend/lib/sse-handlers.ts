@@ -47,6 +47,7 @@ export function handleSSEMessage(event: MessageEvent, handlers: SSEHandlers) {
       const toolName = (data.tool_name as string) || "Unknown Tool";
       const toolInput = data.tool_input as Record<string, any> | undefined;
       const detail = extractToolDetail(toolName, toolInput);
+      const input = toolInput ? JSON.stringify(toolInput) : undefined;
 
       handlers.setCurrentTool({ name: toolName, status: "running" });
 
@@ -60,7 +61,7 @@ export function handleSSEMessage(event: MessageEvent, handlers: SSEHandlers) {
               ...lastMsg,
               tool_calls: [
                 ...(lastMsg.tool_calls || []),
-                { name: toolName, status: "running" as const, detail },
+                { name: toolName, status: "running" as const, detail, input },
               ],
             },
           ];
@@ -73,7 +74,7 @@ export function handleSSEMessage(event: MessageEvent, handlers: SSEHandlers) {
             content: "",
             created_at: new Date().toISOString(),
             event_type: "tool_started",
-            tool_calls: [{ name: toolName, status: "running" as const, detail }],
+            tool_calls: [{ name: toolName, status: "running" as const, detail, input }],
           },
         ];
       });
