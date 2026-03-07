@@ -99,9 +99,13 @@ class Service:
         if sandbox_id:
             try:
                 print(f"Attempting to reconnect to sandbox {sandbox_id} for project {project_id}")
-                sandbox = await AsyncSandbox.reconnect(sandbox_id)
+                sandbox = await asyncio.wait_for(
+                    AsyncSandbox.reconnect(sandbox_id), timeout=30
+                )
                 print(f"Reconnected to existing sandbox {sandbox_id}")
                 return sandbox, False
+            except asyncio.TimeoutError:
+                print(f"Sandbox reconnect timed out after 30s for {sandbox_id}, creating fresh sandbox")
             except Exception as e:
                 print(f"Sandbox reconnect failed (likely expired): {e}")
 
