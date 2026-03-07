@@ -33,6 +33,21 @@ class UserResponse(BaseModel):
     is_unlimited: bool = False
 
 
+class ProjectResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    user_id: int
+    title: str
+    app_url: Optional[str] = None
+    model_choice: str
+    created_at: datetime
+
+
+class ProjectsListResponse(BaseModel):
+    projects: list[ProjectResponse]
+
+
 class RefreshTokenRequest(BaseModel):
     refresh_token: str
 

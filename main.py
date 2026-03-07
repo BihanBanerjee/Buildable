@@ -14,6 +14,7 @@ from fastapi import Depends
 from sqlalchemy import select, delete
 from agent.service import agent_service
 from auth.router import router
+from auth.schema import ProjectsListResponse
 from db.models import User, Chat, Message
 from auth.dependencies import get_current_user
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -457,19 +458,17 @@ async def delete_project(
     return {"status": "deleted", "project_id": id}
 
 
-@app.get("/projects")
+@app.get("/projects", response_model=ProjectsListResponse)
 async def list_user_projects(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     """List all Projects per user"""
     result = await db.execute(
-        select(Chat).where(Chat.user_id == current_user.id)
+        select(Chat).where(Chat.user_id == current_user.id).order_by(Chat.created_at.desc())
     )
     projects = result.scalars().all()
-    return {
-        "projects" : projects
-    }
+    return ProjectsListResponse(projects=projects)
 
 
 @app.get("/sse/{id}")
