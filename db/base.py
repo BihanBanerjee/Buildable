@@ -14,7 +14,7 @@ DATABASE_URL = os.getenv(
 # Production-ready settings (works with local Docker and cloud poolers like Supabase/Neon)
 engine = create_async_engine(
     DATABASE_URL,
-    echo=True,  # Enable SQL query logging for debugging
+    echo=False,
     future=True,  # Use SQLAlchemy 2.0 style
     pool_pre_ping=True, # Test connections before using them
     pool_size=5, # Number of connections to keep open in the pool
