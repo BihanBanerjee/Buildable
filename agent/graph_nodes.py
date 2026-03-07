@@ -205,7 +205,7 @@ async def planner_node(state: GraphState, config: RunnableConfig) -> dict:
             )
 
         enhanced_prompt = state.get("enhanced_prompt", state.get("user_prompt", ""))
-        print(f"INFO: Recieved Prompt {enhanced_prompt}")
+        print(f"INFO: Received prompt for project {project_id if 'project_id' in state else '(unknown)'}")
         project_id = state.get("project_id", "")
         print(f"INFO: Project ID: {project_id}")
 
@@ -409,7 +409,7 @@ async def builder_node(state: GraphState, config: RunnableConfig) -> dict:
 
         plan = state.get("plan", {})
         if plan:
-            print("INFO: Plan Recieved")
+            print("INFO: Plan received")
 
         current_errors = state.get("current_errors", {})
 

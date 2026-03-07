@@ -53,6 +53,11 @@ class ChatMessagePayload(BaseModel):
     prompt: str
 
 
+class ProjectFilesResponse(BaseModel):
+    files: list[str]
+    sandbox_active: bool
+
+
 @app.get("/")
 async def get_health():
     return {"message": "Welome", "status": "Healthy"}
@@ -122,7 +127,7 @@ async def create_project(
         return JSONResponse(
             {
                 "error": "No tokens remaining",
-                "message": f"You have used all your tokens. You get 5 tokens per hour. Reset in {hours_remaining:.1f} hours.",
+                "message": f"You have used all your tokens. Your 5 tokens will reset in {hours_remaining:.1f} hours.",
                 "tokens_remaining": current_user.tokens_remaining,
                 "reset_in_hours": hours_remaining
             },
@@ -273,7 +278,7 @@ async def _list_sandbox_files(sandbox) -> list:
     return json.loads(proc.stdout)
 
 
-@app.get("/projects/{id}/files")
+@app.get("/projects/{id}/files", response_model=ProjectFilesResponse)
 async def get_project_files(id: str, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Chat).where(Chat.id == id))
     chat = result.scalar_one_or_none()
@@ -615,7 +620,7 @@ async def send_message(
         return JSONResponse(
             {
                 "error": "No tokens remaining",
-                "message": f"You have used all your tokens. You get 5 tokens per hour. Reset in {hours_remaining:.1f} hours.",
+                "message": f"You have used all your tokens. Your 5 tokens will reset in {hours_remaining:.1f} hours.",
                 "tokens_remaining": current_user.tokens_remaining,
                 "reset_in_hours": hours_remaining
             },
