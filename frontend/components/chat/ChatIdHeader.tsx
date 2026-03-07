@@ -36,11 +36,28 @@ export function ChatIdHeader({
 
         <div className="flex items-center gap-2">
           {userData && (
-            <div className="hidden md:flex items-center gap-2 px-3 py-1.5 rounded-lg bg-secondary border border-border text-sm">
+            <div
+              className="hidden md:flex items-center gap-2 px-3 py-1.5 rounded-lg bg-secondary border border-border text-sm"
+              title={
+                !userData.is_unlimited && userData.reset_in_hours !== undefined
+                  ? `Resets in ${userData.reset_in_hours.toFixed(1)}h`
+                  : undefined
+              }
+            >
               <span className="text-muted-foreground">{userData.email}</span>
               <span className="text-border">•</span>
-              <span className="text-foreground font-medium">
-                {userData.tokens_remaining} tokens
+              <span
+                className={`font-medium ${
+                  userData.is_unlimited
+                    ? "text-foreground"
+                    : userData.tokens_remaining === 0
+                      ? "text-red-400"
+                      : userData.tokens_remaining <= 2
+                        ? "text-yellow-400"
+                        : "text-foreground"
+                }`}
+              >
+                {userData.is_unlimited ? "∞ unlimited" : `${userData.tokens_remaining} tokens`}
               </span>
             </div>
           )}
