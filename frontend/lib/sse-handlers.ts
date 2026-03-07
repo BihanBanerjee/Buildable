@@ -158,11 +158,11 @@ export function handleSSEMessage(event: MessageEvent, handlers: SSEHandlers) {
       return;
     }
 
-    if (data.type === "error" || data.e === "error") {
+    if (data.e === "error") {
       handlers.setError((data.message as string) || "An error occurred");
     }
 
-    if (data.type === "token_update" || data.tokens_remaining !== undefined) {
+    if (data.e === "token_update" || data.tokens_remaining !== undefined) {
       const user = JSON.parse(localStorage.getItem("user_data") || "{}");
       user.tokens_remaining = data.tokens_remaining;
       if (data.reset_in_hours !== undefined) {
