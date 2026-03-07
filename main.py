@@ -23,7 +23,7 @@ from db.base import get_db, AsyncSessionLocal
 from auth.utils import decode_token
 
 
-app = FastAPI(title="lovable")
+app = FastAPI(title="Buildable")
 
 origins = [
     "http://localhost:3000",
