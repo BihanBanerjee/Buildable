@@ -14,7 +14,7 @@ from .formatters import (
 )
 import json
 from langgraph.prebuilt import create_react_agent
-from .prompts import INITPROMPT, VALIDATOR_PROMPT, ENHANCER_PROMPT, get_builder_error_prompt, get_builder_prompt
+from .prompts import INITPROMPT_FIRST, INITPROMPT_FOLLOWUP, VALIDATOR_PROMPT, ENHANCER_PLANNER_PROMPT, get_builder_error_prompt, get_builder_prompt
 from utils.store import load_json_store
 import traceback
 from db.base import AsyncSessionLocal
@@ -66,9 +66,15 @@ async def _stream_agent_events(
     event_queue: asyncio.Queue,
     project_id: str,
 ) -> None:
-    """Stream agent events to the SSE queue and store them in the DB."""
+    """Stream agent events to the SSE queue.
+
+    Tool calls are collected in-memory and flushed as a single DB row at the end,
+    instead of 20-30 individual INSERT per build.  Real-time SSE events are still
+    sent for every tool_start / tool_end so the frontend sees live progress.
+    """
 
     thinking_sent = False  # Only send one thinking event per agent execution
+    tool_log: list[dict] = []  # Collect tool calls for single batch DB write
 
     async for event in agent_executor.astream_events(
         {"messages": messages}, version="v2", config=config
@@ -105,13 +111,6 @@ async def _stream_agent_events(
                 "tool_name": tool_name,
                 "tool_input": tool_input,
             })
-            await store_message(
-                chat_id=project_id,
-                role="assistant",
-                content=f"Using tool: {tool_name}",
-                event_type="tool_started",
-                tool_calls=[{"name": tool_name, "status": "running", "input": str(tool_input)}],
-            )
 
         elif kind == "on_tool_end":
             tool_name = event.get("name")
@@ -127,68 +126,39 @@ async def _stream_agent_events(
                 "tool_name": tool_name,
                 "tool_output": tool_output,
             })
-            await store_message(
-                chat_id=project_id,
-                role="assistant",
-                content=f"Completed: {tool_name}\n{tool_output[:200]}",
-                event_type="tool_completed",
-                tool_calls=[{"name": tool_name, "status": "success", "output": tool_output[:500]}],
-            )
+
+            # Collect for batch DB write (compact: name + truncated output)
+            tool_log.append({"name": tool_name, "output": tool_output[:150]})
+
+    # Flush all tool calls as ONE DB row instead of N individual writes
+    if tool_log:
+        await store_message(
+            chat_id=project_id,
+            role="assistant",
+            content=f"Executed {len(tool_log)} tool calls: {', '.join(t['name'] for t in tool_log)}",
+            event_type="tool_summary",
+            tool_calls=tool_log,
+        )
 
 
 
 async def enhancer_node(state: GraphState, config: RunnableConfig) -> dict:
     """
-    Enhancer node: Expands short/vague user prompts into detailed product descriptions.
-    Only runs on the first message — follow-up prompts pass through unchanged.
+    Enhancer node: Now a lightweight pass-through. Enhancement is merged into planner_node
+    to save one LLM round-trip. This node just forwards the prompt and emits SSE events.
     """
     configurable = config.get("configurable", {})
     event_queue = configurable.get("event_queue")
-
     user_prompt = state.get("user_prompt", "")
-    is_first_message = state.get("is_first_message", True)
 
-    # Follow-up prompts: skip enhancement, pass through as-is
-    if not is_first_message:
-        print("Enhancer node: follow-up prompt, skipping enhancement")
-        return {"enhanced_prompt": user_prompt}
+    if event_queue:
+        safe_send_event(event_queue, {
+            "e": "enhancer_started",
+            "message": "Understanding your idea...",
+        })
 
-    try:
-        if event_queue:
-            safe_send_event(event_queue, {
-                "e": "enhancer_started",
-                "message": "Understanding your idea...",
-            })
-
-        print(f"Enhancer node: enhancing prompt: {user_prompt[:80]}")
-
-        messages = [
-            SystemMessage(content=ENHANCER_PROMPT),
-            HumanMessage(content=user_prompt),
-        ]
-
-        api_key = configurable.get("openrouter_api_key")
-        builder_model = state.get("builder_model", "google/gemini-2.5-pro")
-        fast_model = get_fast_model(builder_model)
-        llm = create_llm(api_key, fast_model)
-        print(f"Enhancer node: Using {fast_model} via OpenRouter")
-        response = await llm.ainvoke(messages)
-        enhanced = response.content.strip()
-
-        print(f"Enhancer node: enhanced prompt: {enhanced[:120]}")
-
-        if event_queue:
-            safe_send_event(event_queue, {
-                "e": "enhancer_complete",
-                "message": "Got it! Planning your application...",
-            })
-
-        return {"enhanced_prompt": enhanced}
-
-    except Exception as e:
-        # On any failure, fall back to the original prompt — never block the build
-        print(f"Enhancer node failed, using original prompt: {e}")
-        return {"enhanced_prompt": user_prompt}
+    print(f"Enhancer node: passing prompt to planner: {user_prompt[:80]}")
+    return {"enhanced_prompt": user_prompt}
 
 
 async def planner_node(state: GraphState, config: RunnableConfig) -> dict:
@@ -200,113 +170,61 @@ async def planner_node(state: GraphState, config: RunnableConfig) -> dict:
 
     try:
         if event_queue:
-            safe_send_event(event_queue,
-                {
-                    "e": "planner_started",
-                    "message": "Planning the application architecture...",
-                }
-            )
+            safe_send_event(event_queue, {
+                "e": "planner_started",
+                "message": "Planning the application architecture...",
+            })
 
         enhanced_prompt = state.get("enhanced_prompt", state.get("user_prompt", ""))
         project_id = state.get("project_id", "")
+        is_first_message = state.get("is_first_message", True)
         print(f"INFO: Received prompt for project {project_id or '(unknown)'}")
-        print(f"INFO: Project ID: {project_id}")
 
         previous_context = ""
 
         # check if previous context is there
         if project_id:
-            print(f"Loading context for project: {project_id}")
             context = await asyncio.to_thread(load_json_store, project_id, "context.json")
-            print(f"Loaded context: {context}")
-
             if context:
-                print(f"Context keys found: {context.keys()}")
-
-                # Format conversation history
-                conversation_history_text = ""
-                conversation_history = context.get("conversation_history", [])
-                print(f"Conversation history entries: {len(conversation_history)}")
-
-                if conversation_history:
-                    conversation_history_text = (
-                        "\nCONVERSATION HISTORY (Last requests):\n"
-                    )
-                    for i, conv in enumerate(conversation_history[-5:], 1):
-                        status = "[SUCCESS]" if conv.get("success") else "[FAILED]"
-                        conversation_history_text += f"   {i}. {status} {conv.get('user_prompt', 'Unknown')[:100]}\n"
+                conv_text = ""
+                for i, conv in enumerate(context.get("conversation_history", [])[-5:], 1):
+                    status = "[OK]" if conv.get("success") else "[FAIL]"
+                    conv_text += f"  {i}. {status} {conv.get('user_prompt', '')[:80]}\n"
 
                 previous_context = f"""
+EXISTING PROJECT CONTEXT:
+- About: {context.get('semantic', 'N/A')}
+- How: {context.get('procedural', 'N/A')}
+- Done: {context.get('episodic', 'N/A')}
+- Files: {len(context.get('files_created', []))} exist
+{conv_text}
+Plan only NEW changes — don't recreate existing work."""
 
-                IMPORTANT: PREVIOUS WORK ON THIS PROJECT
+        user_message = f"""{previous_context}
 
-                WHAT THIS PROJECT IS:
-                {context.get('semantic', 'Not documented')}
-
-                HOW IT WORKS:
-                {context.get('procedural', 'Not documented')}
-
-                WHAT HAS BEEN DONE:
-                {context.get('episodic', 'Not documented')}
-
-                EXISTING FILES: {len(context.get('files_created', []))} files already exist
-                {conversation_history_text}
-
-                CRITICAL: This is an EXISTING project. Your plan should:
-                - Build upon what already exists
-                - Consider the conversation history to understand the user's intent
-                - Only add/modify what's needed for the new request
-                - NOT recreate existing components/pages
-                - Integrate with the existing structure
-                """
-                print(f"Previous context prepared successfully")
-            else:
-                print("No previous context found - empty dict returned")
-
-        planning_prompt = f"""
-        You are an expert React application architect. Analyze the following user request and create a comprehensive implementation plan.
-        {previous_context}
-
-        USER REQUEST:
-        {enhanced_prompt}
-
-        Create a detailed plan that includes:
-        1. Application overview and purpose
-        2. Component hierarchy and structure
-        3. Page/routing structure
-        4. Required dependencies
-        5. File structure
-        6. Implementation steps
-
-        {"NOTE: Since this is an existing project, focus your plan on the NEW features/changes requested, not recreating everything." if previous_context else ""}
-
-        Respond with a JSON object containing the plan.
-        """
+USER REQUEST: {enhanced_prompt}"""
 
         messages = [
-            SystemMessage(
-                content="You are an expert React application architect. Create detailed implementation plans."
-            ),
-            HumanMessage(content=planning_prompt),
+            SystemMessage(content=ENHANCER_PLANNER_PROMPT),
+            HumanMessage(content=user_message),
         ]
 
         if event_queue:
             safe_send_event(event_queue, {"e": "thinking", "message": "Analyzing your request and creating implementation plan..."})
 
-        # Store thinking message
         await store_message(
-            chat_id=state.get("project_id"),
+            chat_id=project_id,
             role="assistant",
             content="Analyzing your request and creating implementation plan...",
             event_type="thinking"
         )
 
-        # Structured output — validates the plan against PlanSchema; no manual JSON parsing needed
+        # Single LLM call: enhances vague prompts AND produces the plan
         api_key = configurable.get("openrouter_api_key")
         builder_model = state.get("builder_model", "google/gemini-2.5-pro")
         fast_model = get_fast_model(builder_model)
-        llm = create_llm(api_key, fast_model)
-        print(f"Planner node: Using {fast_model} via OpenRouter")
+        llm = create_llm(api_key, fast_model, max_tokens=4000)
+        print(f"Planner node: Using {fast_model} via OpenRouter (enhancement + planning merged)")
         plan_result = await llm.with_structured_output(PlanSchema).ainvoke(messages)
         plan = plan_result.model_dump()
 
@@ -424,7 +342,13 @@ async def builder_node(state: GraphState, config: RunnableConfig) -> dict:
         project_id = state.get("project_id", "")
 
         files_tracker: list = []
-        base_tools = create_tools_with_context(sandbox, event_queue, project_id, files_tracker=files_tracker)
+        # First build: fewer tools (no get_context, save_context, delete_file, list_directory)
+        # = smaller tool schema = fewer tokens per LLM call
+        base_tools = create_tools_with_context(
+            sandbox, event_queue, project_id,
+            files_tracker=files_tracker,
+            first_build=is_first_message,
+        )
 
         if current_errors:
             error_details = []
@@ -441,10 +365,13 @@ async def builder_node(state: GraphState, config: RunnableConfig) -> dict:
 
             builder_prompt = get_builder_error_prompt("\n".join(error_details))
         else:
-            builder_prompt = get_builder_prompt(plan)
+            builder_prompt = get_builder_prompt(plan, is_first_message=is_first_message)
+
+        # Use the right system prompt based on first vs follow-up
+        system_prompt = INITPROMPT_FIRST if is_first_message else INITPROMPT_FOLLOWUP
 
         messages = [
-            SystemMessage(content=INITPROMPT),
+            SystemMessage(content=system_prompt),
             HumanMessage(content=builder_prompt),
         ]
 
@@ -598,10 +525,10 @@ async def code_validator_node(state: GraphState, config: RunnableConfig) -> dict
         api_key = configurable.get("openrouter_api_key")
         builder_model = state.get("builder_model", "google/gemini-2.5-pro")
         fast_model = get_fast_model(builder_model)
-        validator_llm = create_llm(api_key, fast_model)
+        validator_llm = create_llm(api_key, fast_model, max_tokens=4000)
         print(f"Validator node: Using {fast_model} via OpenRouter")
         validator_agent = create_react_agent(validator_llm, tools=base_tools)
-        agent_config = {"recursion_limit": 50}
+        agent_config = {"recursion_limit": 15}  # Validator should finish in 3-5 tool calls
 
         try:
             print(

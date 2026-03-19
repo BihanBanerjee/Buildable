@@ -279,7 +279,7 @@ class Service:
 
         try:
             fast_model = get_fast_model(builder_model)
-            llm = create_llm(api_key, fast_model)
+            llm = create_llm(api_key, fast_model, max_tokens=16)
             messages = [
                 SystemMessage(content=GUARDRAIL_PROMPT),
                 HumanMessage(content=prompt),
@@ -300,7 +300,7 @@ class Service:
         from .agent import create_llm, get_fast_model
 
         fast_model = get_fast_model(builder_model)
-        llm = create_llm(api_key, fast_model)
+        llm = create_llm(api_key, fast_model, max_tokens=512)
         messages = [
             SystemMessage(content=CHAT_RESPONSE_PROMPT),
             HumanMessage(content=prompt),

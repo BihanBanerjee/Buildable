@@ -22,7 +22,7 @@ def get_fast_model(builder_model: str) -> str:
     return FAST_MODEL_MAP.get(builder_model, "google/gemini-2.5-flash")
 
 
-def create_llm(api_key: str, model: str, max_tokens: int = 8096) -> ChatOpenAI:
+def create_llm(api_key: str, model: str, max_tokens: int = 16000) -> ChatOpenAI:
     """Create a ChatOpenAI instance routed through OpenRouter."""
     return ChatOpenAI(
         model=model,
