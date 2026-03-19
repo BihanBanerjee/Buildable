@@ -68,6 +68,8 @@ async def _stream_agent_events(
 ) -> None:
     """Stream agent events to the SSE queue and store them in the DB."""
 
+    thinking_sent = False  # Only send one thinking event per agent execution
+
     async for event in agent_executor.astream_events(
         {"messages": messages}, version="v2", config=config
     ):
@@ -90,14 +92,10 @@ async def _stream_agent_events(
                     content = str(content)
 
                 if content:
-                    safe_send_event(event_queue, {"e": "thinking", "message": content})
-                    if len(content) > 50:
-                        await store_message(
-                            chat_id=project_id,
-                            role="assistant",
-                            content=content,
-                            event_type="thinking",
-                        )
+                    # Only send the first thinking event to avoid flooding the SSE stream
+                    if not thinking_sent:
+                        safe_send_event(event_queue, {"e": "thinking", "message": content})
+                        thinking_sent = True
 
         elif kind == "on_tool_start":
             tool_name = event.get("name")
@@ -514,43 +512,37 @@ async def builder_node(state: GraphState, config: RunnableConfig) -> dict:
             }
 
         except asyncio.TimeoutError:
-            print("Builder agent timed out after 10 minutes")
+            timeout_msg = "Builder agent timed out after 10 minutes"
+            print(timeout_msg)
 
             if event_queue:
-                safe_send_event(event_queue,
-                    {
-                        "e": "builder_error",
-                        "message": "Builder agent timed out after 10 minutes",
-                    }
-                )
+                safe_send_event(event_queue, {"e": "builder_error", "message": timeout_msg})
 
             return {
-                "files_created": [],
+                "files_created": files_tracker,  # preserve any files created before timeout
                 "files_modified": [],
+                "current_errors": {"builder_error": [{"type": "timeout", "error": timeout_msg}]},
                 "current_node": "builder",
                 "execution_log": [
-                    {"node": "builder", "status": "timeout", "files_created": [], "files_modified": []}
+                    {"node": "builder", "status": "timeout", "files_created": files_tracker}
                 ],
             }
 
         except Exception as e:
-            print(f"Builder agent execution error: {e}")
+            error_msg = f"Builder agent execution error: {str(e)}"
+            print(error_msg)
             traceback.print_exc()
 
             if event_queue:
-                safe_send_event(event_queue,
-                    {
-                        "e": "builder_error",
-                        "message": f"Builder agent execution error: {str(e)}",
-                    }
-                )
+                safe_send_event(event_queue, {"e": "builder_error", "message": error_msg})
 
             return {
-                "files_created": [],
+                "files_created": files_tracker,  # preserve any files created before crash
                 "files_modified": [],
+                "current_errors": {"builder_error": [{"type": "exception", "error": error_msg}]},
                 "current_node": "builder",
                 "execution_log": [
-                    {"node": "builder", "status": "error", "files_created": [], "files_modified": []}
+                    {"node": "builder", "status": "error", "files_created": files_tracker}
                 ],
             }
 
@@ -564,6 +556,7 @@ async def builder_node(state: GraphState, config: RunnableConfig) -> dict:
         return {
             "current_node": "builder",
             "error_message": error_msg,
+            "current_errors": {"builder_error": [{"type": "node_error", "error": error_msg}]},
             "execution_log": [{"node": "builder", "status": "error", "error": error_msg}],
         }
 
@@ -619,7 +612,7 @@ async def code_validator_node(state: GraphState, config: RunnableConfig) -> dict
                 _stream_agent_events(
                     validator_agent, messages, agent_config, event_queue, project_id
                 ),
-                timeout=600,
+                timeout=300,  # 5 min — validator is lighter than builder
             )
 
             # Read what the agent actually reported via report_validation_result
@@ -786,7 +779,18 @@ async def application_checker_node(state: GraphState, config: RunnableConfig) ->
                             "nohup npm run dev -- --host 0.0.0.0 > /tmp/vite.log 2>&1 &",
                             cwd="/home/user/react-app",
                         )
-                        await asyncio.sleep(10)  # Give Vite time to start
+                        # Poll for Vite to start instead of fixed sleep
+                        for attempt in range(15):
+                            await asyncio.sleep(2)
+                            poll = await sandbox.commands.run(
+                                "ss -tlnp 2>/dev/null | grep -q ':5173' && echo 'ready' || echo 'waiting'",
+                                cwd="/home/user/react-app",
+                            )
+                            if "ready" in poll.stdout:
+                                print(f"Application checker: Vite ready after {(attempt + 1) * 2}s")
+                                break
+                        else:
+                            print("Application checker: Vite did not start within 30s")
                     else:
                         print("Application checker: Port 5173 is already open")
 

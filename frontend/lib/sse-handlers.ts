@@ -136,12 +136,22 @@ export function handleSSEMessage(event: MessageEvent, handlers: SSEHandlers) {
       handlers.setIsBuilding(false);
       handlers.setCurrentTool(null);
 
+      // Mark last message as completed AND force-resolve any stuck tool_calls
       handlers.setMessages((prev) => {
-        const lastMsg = prev[prev.length - 1];
-        if (lastMsg?.role === "assistant") {
-          return [...prev.slice(0, -1), { ...lastMsg, isCompleted: true }];
-        }
-        return prev;
+        return prev.map((msg, idx) => {
+          if (msg.role === "assistant" && msg.tool_calls) {
+            const resolvedCalls = msg.tool_calls.map((t) =>
+              t.status === "running" ? { ...t, status: "success" as const } : t,
+            );
+            const updates: Record<string, unknown> = { tool_calls: resolvedCalls };
+            if (idx === prev.length - 1) updates.isCompleted = true;
+            return { ...msg, ...updates };
+          }
+          if (idx === prev.length - 1 && msg.role === "assistant") {
+            return { ...msg, isCompleted: true };
+          }
+          return msg;
+        });
       });
 
       const updatedUser = localStorage.getItem("user_data");
