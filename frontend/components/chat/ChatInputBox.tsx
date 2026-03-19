@@ -1,5 +1,5 @@
+import { useRef, useEffect, useCallback } from "react";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { ArrowUp } from "lucide-react";
 
 interface ChatInputBoxProps {
@@ -15,16 +15,40 @@ export function ChatInputBox({
   onInputChange,
   onSubmit,
 }: ChatInputBoxProps) {
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  const autoResize = useCallback(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = Math.min(el.scrollHeight, 200) + "px";
+  }, []);
+
+  useEffect(() => {
+    autoResize();
+  }, [input, autoResize]);
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      if (input.trim() && !isLoading) {
+        onSubmit(e as unknown as React.FormEvent);
+      }
+    }
+  };
+
   return (
     <form onSubmit={onSubmit}>
       <div className="bg-card border border-border rounded-xl p-4 hover:border-emerald-900/50 transition-colors">
-        <Input
-          type="text"
+        <textarea
+          ref={textareaRef}
           placeholder="Describe the app you want to build..."
           value={input}
           onChange={(e) => onInputChange(e.target.value)}
+          onKeyDown={handleKeyDown}
           disabled={isLoading}
-          className="border-0 bg-transparent text-foreground placeholder:text-muted-foreground focus-visible:ring-0 text-base h-auto py-1"
+          rows={1}
+          className="w-full resize-none border-0 bg-transparent text-foreground placeholder:text-muted-foreground focus:outline-none text-base py-1"
         />
         <div className="flex items-center justify-end mt-3 pt-3 border-t border-border">
           <Button
