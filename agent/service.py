@@ -271,11 +271,78 @@ class Service:
 
         print(f"Snapshotted {len(files_stored)} files for project {project_id} to disk")
 
-    async def run_agent_stream(self, prompt: str, id: str, event_queue: asyncio.Queue, model_choice: str = "gemini", is_first_message: bool = True):
+    async def _classify_prompt(self, prompt: str, api_key: str, builder_model: str) -> str:
+        """Classify whether the prompt is a build request or general chat."""
+        from langchain_core.messages import SystemMessage, HumanMessage
+        from .prompts import GUARDRAIL_PROMPT
+        from .agent import create_llm, get_fast_model
+
+        try:
+            fast_model = get_fast_model(builder_model)
+            llm = create_llm(api_key, fast_model)
+            messages = [
+                SystemMessage(content=GUARDRAIL_PROMPT),
+                HumanMessage(content=prompt),
+            ]
+            response = await llm.ainvoke(messages)
+            classification = response.content.strip().lower()
+            print(f"Prompt classification: '{classification}' for: {prompt[:80]}")
+            return "build" if "build" in classification else "chat"
+        except Exception as e:
+            # On classification failure, default to "build" so we never block real requests
+            print(f"Classification failed, defaulting to build: {e}")
+            return "build"
+
+    async def _handle_chat_response(self, prompt: str, project_id: str, event_queue: asyncio.Queue, api_key: str, builder_model: str):
+        """Answer a non-build prompt conversationally instead of running the full pipeline."""
+        from langchain_core.messages import SystemMessage, HumanMessage
+        from .prompts import CHAT_RESPONSE_PROMPT
+        from .agent import create_llm, get_fast_model
+
+        fast_model = get_fast_model(builder_model)
+        llm = create_llm(api_key, fast_model)
+        messages = [
+            SystemMessage(content=CHAT_RESPONSE_PROMPT),
+            HumanMessage(content=prompt),
+        ]
+        response = await llm.ainvoke(messages)
+        answer = response.content.strip()
+
+        # Send the conversational response via SSE
+        event_queue.put_nowait({"e": "chat_response", "message": answer})
+
+        # Store in DB
+        async with AsyncSessionLocal() as db:
+            msg = Message(
+                id=str(uuid.uuid4()),
+                chat_id=project_id,
+                role="assistant",
+                content=answer,
+                event_type="chat_response",
+            )
+            db.add(msg)
+            await db.commit()
+
+        # Signal completion (no URL since nothing was built)
+        event_queue.put_nowait({
+            "e": "completed",
+            "url": None,
+            "success": True,
+            "files_created": [],
+        })
+
+    async def run_agent_stream(self, prompt: str, id: str, event_queue: asyncio.Queue, openrouter_api_key: str = "", builder_model: str = "google/gemini-2.5-pro", is_first_message: bool = True):
         """
         Run the LangGraph multi-agent workflow
         """
         try:
+            # Guardrail: classify prompt before creating sandbox or running workflow
+            classification = await self._classify_prompt(prompt, openrouter_api_key, builder_model)
+            if classification == "chat":
+                print(f"Prompt classified as chat, responding conversationally: {prompt[:80]}")
+                await self._handle_chat_response(prompt, id, event_queue, openrouter_api_key, builder_model)
+                return
+
             event_queue.put_nowait(
                 {
                     "e": "started",
@@ -302,7 +369,7 @@ class Service:
                 "max_retries": 3,
                 "current_node": "",
                 "execution_log": [],
-                "model_choice": model_choice,
+                "builder_model": builder_model,
                 "is_first_message": is_first_message,
                 "success": False,
                 "error_message": None,
@@ -316,7 +383,7 @@ class Service:
             final_state = await self.workflow.ainvoke(
                 initial_state,
                 config={
-                    "configurable": {"sandbox": sandbox, "event_queue": event_queue},
+                    "configurable": {"sandbox": sandbox, "event_queue": event_queue, "openrouter_api_key": openrouter_api_key},
                     "recursion_limit": 100,
                 },
             )

@@ -2,9 +2,7 @@ export interface UserData {
   id: number;
   email: string;
   name: string;
-  tokens_remaining: number;
-  is_unlimited?: boolean;
-  reset_in_hours?: number;
+  has_openrouter_key?: boolean;
 }
 
 export interface LoginResponse {
@@ -34,8 +32,6 @@ export interface ChatResponse {
   status: string;
   message: string;
   chat_id: string;
-  tokens_remaining: number;
-  reset_in_hours: number;
 }
 
 export interface Project {

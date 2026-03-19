@@ -1,13 +1,11 @@
-import os
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from db.models import User, RefreshToken
 from db.base import get_db
-
-ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "")
 from .schema import (
-    UserLogin, UserResponse, UserRegister, Token, RefreshTokenRequest, RegisterResponse
+    UserLogin, UserResponse, UserRegister, Token, RefreshTokenRequest, RegisterResponse,
+    UpdateApiKeyRequest,
 )
 
 from .utils import (
@@ -57,10 +55,7 @@ async def register_user(user: UserRegister, db: AsyncSession = Depends(get_db)):
         email=new_user.email,
         name=new_user.name,
         created_at=new_user.created_at,
-        last_query_at=new_user.last_query_at,
-        tokens_remaining=new_user.tokens_remaining,
-        tokens_reset_at=new_user.tokens_reset_at,
-        is_unlimited=bool(ADMIN_EMAIL) and new_user.email == ADMIN_EMAIL,
+        has_openrouter_key=bool(new_user.encrypted_openrouter_key),
     )
 
     # Create RegisterResponse with the correct structure
@@ -174,10 +169,7 @@ async def get_me(current_user: User = Depends(get_current_user)):
         email=current_user.email,
         name=current_user.name,
         created_at=current_user.created_at,
-        last_query_at=current_user.last_query_at,
-        tokens_remaining=current_user.tokens_remaining,
-        tokens_reset_at=current_user.tokens_reset_at,
-        is_unlimited=bool(ADMIN_EMAIL) and current_user.email == ADMIN_EMAIL,
+        has_openrouter_key=bool(current_user.encrypted_openrouter_key),
     )
 
 
@@ -196,3 +188,35 @@ async def logout(
     if db_token and not db_token.revoked:
         db_token.revoked = True
         await db.commit()
+
+
+@router.put("/api-key", response_model=UserResponse)
+async def save_api_key(
+    body: UpdateApiKeyRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Encrypt and store the user's OpenRouter API key."""
+    from utils.crypto import encrypt_api_key
+
+    current_user.encrypted_openrouter_key = encrypt_api_key(body.openrouter_api_key)
+    await db.commit()
+    await db.refresh(current_user)
+
+    return UserResponse(
+        id=current_user.id,
+        email=current_user.email,
+        name=current_user.name,
+        created_at=current_user.created_at,
+        has_openrouter_key=True,
+    )
+
+
+@router.delete("/api-key", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_api_key(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Remove the user's stored OpenRouter API key."""
+    current_user.encrypted_openrouter_key = None
+    await db.commit()

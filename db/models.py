@@ -1,11 +1,8 @@
-import os
 from .base import Base
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from typing import List, Optional
 from sqlalchemy import Integer, String, DateTime, ForeignKey, Text, JSON
-
-ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "")
 
 
 class User(Base):
@@ -22,70 +19,26 @@ class User(Base):
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
 
-    # Rate limiting fields
+    # OpenRouter API key (encrypted via Fernet)
+    encrypted_openrouter_key: Mapped[Optional[str]] = mapped_column(
+        String(512), nullable=True, default=None
+    )
+
+    # Legacy columns kept to avoid migration — no longer used
     last_query_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True, default=None
     )
-
-    # Token/Credits System - user gets 5 tokens per hour
     tokens_remaining: Mapped[int] = mapped_column(Integer, default=5)
     tokens_reset_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True, default=None
     )
 
-    # A user can have many Chats.
-    # back_populates="user" links back to the user field in the Chat model.
-    # cascade="all, delete-orphan" → if a user is deleted, all their chats are deleted too (prevents orphaned chats).
     chats: Mapped[List["Chat"]] = relationship(
         "Chat", back_populates="user", cascade="all, delete-orphan"
     )
     refresh_tokens: Mapped[List["RefreshToken"]] = relationship(
         "RefreshToken", back_populates="user", cascade="all, delete-orphan"
     )
-
-    
-    def can_make_query(self) -> bool:
-        """Check if user can make a query based on rate limiting and tokens"""
-        # Special user gets unlimited access
-        if ADMIN_EMAIL and self.email == ADMIN_EMAIL:
-            return True
-        
-        # Check if we need to reset tokens (1 hour passed)
-        if self.tokens_reset_at is None or datetime.now(timezone.utc) >= self.tokens_reset_at:
-            # Reset tokens
-            self.tokens_remaining = 5
-            self.tokens_reset_at = datetime.now(timezone.utc) + timedelta(hours=1)
-            return True
-        
-        return self.tokens_remaining > 0
-    
-
-    def use_token(self) -> bool:
-        """Use one token and return True if successful, False if no tokens left"""
-        if ADMIN_EMAIL and self.email == ADMIN_EMAIL:
-            return True
-        
-        if self.tokens_reset_at is None or datetime.now(timezone.utc) >= self.tokens_reset_at:
-            self.tokens_remaining = 5
-            self.tokens_reset_at = datetime.now(timezone.utc) + timedelta(hours=1)
-        
-        if self.tokens_remaining > 0:
-            self.tokens_remaining -= 1
-            self.last_query_at = datetime.now(timezone.utc)
-            return True
-        return False
-    
-    
-    def get_time_until_reset(self) -> float:
-        """Get hours until token reset"""
-        if self.tokens_reset_at is None:
-            return 0
-        time_diff = self.tokens_reset_at - datetime.now(timezone.utc)
-        return max(0, time_diff.total_seconds() / 3600)
-    
-    def update_last_query(self):
-        """Update the last query timestamp"""
-        self.last_query_at = datetime.now(timezone.utc)
 
 class Chat(Base):
     __tablename__ = "chats"
@@ -96,7 +49,7 @@ class Chat(Base):
     )
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     app_url: Mapped[Optional[str]] = mapped_column(String(1024), nullable=True)
-    model_choice: Mapped[str] = mapped_column(String(50), nullable=False, default="gemini", server_default="gemini")
+    model_choice: Mapped[str] = mapped_column(String(100), nullable=False, default="google/gemini-2.5-pro", server_default="google/gemini-2.5-pro")
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)

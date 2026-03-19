@@ -12,7 +12,6 @@ export type UserData = {
   id?: string;
   email: string;
   name?: string;
-  tokens_remaining?: number;
-  tokens_reset_at?: string;
+  has_openrouter_key?: boolean;
   [key: string]: unknown;
 };

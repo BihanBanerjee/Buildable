@@ -16,7 +16,7 @@ export default function ChatPage() {
   const [error, setError] = useState("");
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [userData, setUserData] = useState<UserData | null>(null);
-  const [modelChoice, setModelChoice] = useState<"gemini" | "claude">("gemini");
+  const [modelChoice, setModelChoice] = useState("google/gemini-2.5-pro");
   const router = useRouter();
 
   useEffect(() => {
@@ -94,6 +94,7 @@ export default function ChatPage() {
         isAuthenticated={isAuthenticated}
         userData={userData}
         onSignOut={handleSignOut}
+        onUserDataUpdate={setUserData}
       />
 
       <div className="relative z-10 min-h-[calc(100vh-57px)] flex flex-col items-center justify-center px-4">
@@ -117,33 +118,43 @@ export default function ChatPage() {
           />
 
           {/* Model selector */}
-          <div className="mt-3 flex items-center gap-2">
+          <div className="mt-3 flex items-center gap-2 flex-wrap">
             <span className="text-xs text-muted-foreground">Builder model:</span>
             <div className="flex items-center gap-1 rounded-lg border border-border p-1">
-              <button
-                type="button"
-                onClick={() => setModelChoice("gemini")}
-                className={`px-3 py-1 rounded-md text-xs font-medium transition-all ${
-                  modelChoice === "gemini"
-                    ? "bg-primary/15 text-primary"
-                    : "text-muted-foreground hover:text-foreground"
-                }`}
-              >
-                ✦ Gemini 2.5 Pro
-              </button>
-              <button
-                type="button"
-                onClick={() => setModelChoice("claude")}
-                className={`px-3 py-1 rounded-md text-xs font-medium transition-all ${
-                  modelChoice === "claude"
-                    ? "bg-primary/15 text-primary"
-                    : "text-muted-foreground hover:text-foreground"
-                }`}
-              >
-                ◆ Claude Sonnet 4
-              </button>
+              {[
+                { id: "google/gemini-2.5-pro", label: "Gemini 2.5 Pro" },
+                { id: "anthropic/claude-sonnet-4", label: "Claude Sonnet 4" },
+              ].map((m) => (
+                <button
+                  key={m.id}
+                  type="button"
+                  onClick={() => setModelChoice(m.id)}
+                  className={`px-3 py-1 rounded-md text-xs font-medium transition-all ${
+                    modelChoice === m.id
+                      ? "bg-primary/15 text-primary"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  {m.label}
+                </button>
+              ))}
             </div>
           </div>
+
+          {/* API key banner */}
+          {userData && !userData.has_openrouter_key && (
+            <div className="mt-3 p-3 bg-yellow-500/10 border border-yellow-500/20 rounded-lg text-yellow-400 text-sm text-center">
+              Add your OpenRouter API key in{" "}
+              <button
+                type="button"
+                className="underline font-medium hover:text-yellow-300"
+                onClick={() => document.dispatchEvent(new CustomEvent("open-settings"))}
+              >
+                Settings
+              </button>{" "}
+              to start building.
+            </div>
+          )}
 
           {error && (
             <div className="mt-4 p-3 bg-red-500/10 border border-red-500/20 rounded-lg text-red-400 text-sm text-center">

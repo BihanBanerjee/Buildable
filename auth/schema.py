@@ -20,6 +20,10 @@ class Token(BaseModel):
     token_type: str = "bearer"
 
 
+class UpdateApiKeyRequest(BaseModel):
+    openrouter_api_key: str = Field(min_length=10)
+
+
 class UserResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -27,10 +31,7 @@ class UserResponse(BaseModel):
     email: EmailStr
     name: str
     created_at: datetime
-    last_query_at: Optional[datetime] = None
-    tokens_remaining: int = 5
-    tokens_reset_at: Optional[datetime] = None
-    is_unlimited: bool = False
+    has_openrouter_key: bool = False
 
 
 class ProjectResponse(BaseModel):

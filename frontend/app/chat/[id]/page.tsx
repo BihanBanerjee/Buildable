@@ -36,6 +36,7 @@ export default function ChatIdPage() {
   const [projectFiles, setProjectFiles] = useState<string[]>([]);
   const [sandboxActive, setSandboxActive] = useState(true);
   const [isRestartingSandbox, setIsRestartingSandbox] = useState(false);
+  const [isSending, setIsSending] = useState(false);
 
   const eventSourceRef = useRef<EventSource | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -211,6 +212,7 @@ export default function ChatIdPage() {
           handleSSEMessage(event, {
             setCurrentTool,
             setIsBuilding,
+            setIsSending,
             pollUrlUntilReady,
             setMessages,
             setAppUrl,
@@ -239,7 +241,7 @@ export default function ChatIdPage() {
 
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!input.trim() || !sseConnected || isBuilding) return;
+    if (!input.trim() || !sseConnected || isBuilding || isSending) return;
 
     const userMessage: Message = {
       id: Date.now().toString(),
@@ -251,16 +253,24 @@ export default function ChatIdPage() {
     setMessages((prev) => [...prev, userMessage]);
     const promptText = input.trim();
     setInput("");
-    setIsBuilding(true);
+    // Don't set isBuilding here — let SSE events control it.
+    // The "started" event sets isBuilding=true for real builds,
+    // while "chat_response" events skip it entirely. This prevents
+    // the preview panel from flashing briefly on chat-classified prompts.
+    setIsSending(true);
 
     try {
       await apiClient.post(`/chats/${chatId}/messages`, { prompt: promptText });
     } catch (err) {
       console.error("Failed to send message:", err);
       setError("Failed to send message. Please try again.");
-      setIsBuilding(false);
+      setIsSending(false);
     }
   };
+
+  // Auto-hide preview panel when there's nothing to show (e.g. chat-only responses)
+  const hasPreviewContent = !!(appUrl || isBuilding || projectFiles.length > 0);
+  const shouldShowPreview = showPreview && hasPreviewContent;
 
   return (
     <div
@@ -284,6 +294,7 @@ export default function ChatIdPage() {
           onTogglePreview={() => setShowPreview(!showPreview)}
           onNewChat={() => router.push("/chat")}
           onBack={() => router.push("/chat")}
+          onUserDataUpdate={setUserData}
         />
 
         {/* Main split layout */}
@@ -292,7 +303,7 @@ export default function ChatIdPage() {
           <div
             className="flex flex-col border-r border-border"
             style={{
-              width: showPreview ? `${100 - previewWidth}%` : "100%",
+              width: shouldShowPreview ? `${100 - previewWidth}%` : "100%",
               transition: isDragging ? "none" : "width 0.25s ease-out",
             }}
           >
@@ -334,14 +345,14 @@ export default function ChatIdPage() {
             <ChatInput
               input={input}
               wsConnected={sseConnected}
-              isBuilding={isBuilding}
+              isBuilding={isBuilding || isSending}
               onInputChange={setInput}
               onSubmit={handleSendMessage}
             />
           </div>
 
           {/* Drag divider */}
-          {showPreview && (
+          {shouldShowPreview && (
             <div
               className="w-1 bg-border hover:bg-primary/30 cursor-col-resize transition-colors duration-150"
               onMouseDown={() => setIsDragging(true)}
@@ -350,7 +361,7 @@ export default function ChatIdPage() {
           )}
 
           {/* Preview panel */}
-          {showPreview && (
+          {shouldShowPreview && (
             <PreviewPanel
               appUrl={appUrl}
               isCheckingUrl={isCheckingUrl}

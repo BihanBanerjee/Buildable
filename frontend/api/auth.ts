@@ -22,4 +22,15 @@ export const authApi = {
     const response = await apiClient.get<UserData>("/auth/me");
     return response.data;
   },
+
+  saveApiKey: async (openrouterApiKey: string): Promise<UserData> => {
+    const response = await apiClient.put<UserData>("/auth/api-key", {
+      openrouter_api_key: openrouterApiKey,
+    });
+    return response.data;
+  },
+
+  deleteApiKey: async (): Promise<void> => {
+    await apiClient.delete("/auth/api-key");
+  },
 };

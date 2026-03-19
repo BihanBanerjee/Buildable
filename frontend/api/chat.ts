@@ -4,7 +4,7 @@ import { ChatResponse, Project } from "./types";
 export const chatApi = {
   createChat: async (
     prompt: string,
-    modelChoice: string = "gemini",
+    modelChoice: string = "google/gemini-2.5-pro",
   ): Promise<ChatResponse> => {
     const response = await apiClient.post<ChatResponse>("/chat", {
       prompt,

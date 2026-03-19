@@ -1,6 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { ChevronLeft, Eye, EyeOff, Plus } from "lucide-react";
 import type { UserData } from "@/api";
+import { ApiKeySettings } from "./ApiKeySettings";
 
 interface ChatIdHeaderProps {
   userData: UserData | null;
@@ -8,6 +9,7 @@ interface ChatIdHeaderProps {
   onTogglePreview: () => void;
   onNewChat: () => void;
   onBack: () => void;
+  onUserDataUpdate?: (data: UserData) => void;
 }
 
 export function ChatIdHeader({
@@ -16,6 +18,7 @@ export function ChatIdHeader({
   onTogglePreview,
   onNewChat,
   onBack,
+  onUserDataUpdate,
 }: ChatIdHeaderProps) {
   return (
     <div className="border-b border-border px-4 py-3">
@@ -36,29 +39,8 @@ export function ChatIdHeader({
 
         <div className="flex items-center gap-2">
           {userData && (
-            <div
-              className="hidden md:flex items-center gap-2 px-3 py-1.5 rounded-lg bg-secondary border border-border text-sm"
-              title={
-                !userData.is_unlimited && userData.reset_in_hours !== undefined
-                  ? `Resets in ${userData.reset_in_hours.toFixed(1)}h`
-                  : undefined
-              }
-            >
+            <div className="hidden md:flex items-center px-3 py-1.5 rounded-lg bg-secondary border border-border text-sm">
               <span className="text-muted-foreground">{userData.email}</span>
-              <span className="text-border">•</span>
-              <span
-                className={`font-medium ${
-                  userData.is_unlimited
-                    ? "text-foreground"
-                    : userData.tokens_remaining === 0
-                      ? "text-red-400"
-                      : userData.tokens_remaining <= 2
-                        ? "text-yellow-400"
-                        : "text-foreground"
-                }`}
-              >
-                {userData.is_unlimited ? "∞ unlimited" : `${userData.tokens_remaining} tokens`}
-              </span>
             </div>
           )}
           <Button
@@ -70,6 +52,7 @@ export function ChatIdHeader({
           >
             {showPreview ? <EyeOff size={18} /> : <Eye size={18} />}
           </Button>
+          <ApiKeySettings userData={userData} onUserDataUpdate={onUserDataUpdate || (() => {})} />
           <Button size="sm" onClick={onNewChat} className="gap-1.5">
             <Plus size={14} />
             New Chat

@@ -21,6 +21,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from db.base import get_db, AsyncSessionLocal
 
 from auth.utils import decode_token
+from utils.crypto import decrypt_api_key
+from agent.agent import MODELS, DEFAULT_BUILDER_MODEL
 
 
 app = FastAPI(title="Buildable")
@@ -46,7 +48,7 @@ active_runs: dict[str, asyncio.Task] = {}
 
 class ChatPayload(BaseModel):
     prompt: str
-    model_choice: str = "gemini"  # "gemini" or "claude"
+    model_choice: str = "google/gemini-2.5-pro"  # Full OpenRouter model ID
 
 
 class ChatMessagePayload(BaseModel):
@@ -121,36 +123,21 @@ async def create_project(
     if not prompt:
         return JSONResponse({"error": "Too short or no description"}, status_code=400)
 
-    # Check if user has tokens/credits remaining
-    if not current_user.can_make_query():
-        hours_remaining = current_user.get_time_until_reset()
+    # Decrypt user's OpenRouter API key
+    if not current_user.encrypted_openrouter_key:
         return JSONResponse(
-            {
-                "error": "No tokens remaining",
-                "message": f"You have used all your tokens. Your 5 tokens will reset in {hours_remaining:.1f} hours.",
-                "tokens_remaining": current_user.tokens_remaining,
-                "reset_in_hours": hours_remaining
-            },
-            status_code=429
+            {"error": "No API key", "message": "Please add your OpenRouter API key in Settings before building."},
+            status_code=400,
         )
-    
-    # Use one token for this request
-    if not current_user.use_token():
-        return JSONResponse(
-            {"error": "Failed to consume token", "message": "Unable to process request"},
-            status_code=500
-        )
-    
-    # Commit the token usage
-    await db.commit()
-    await db.refresh(current_user)
+    openrouter_api_key = decrypt_api_key(current_user.encrypted_openrouter_key)
 
     if chat_id in active_runs:
         return JSONResponse(
             {"error": "Project is being created. Kindly wait"}, status_code=400
         )
 
-    model_choice = payload.model_choice if payload.model_choice in ("gemini", "claude") else "gemini"
+    allowed_models = set(MODELS.values())
+    model_choice = payload.model_choice if payload.model_choice in allowed_models else DEFAULT_BUILDER_MODEL
 
     new_chat = Chat(
         id=chat_id,
@@ -178,22 +165,13 @@ async def create_project(
         event_queue = asyncio.Queue()
         active_streams[chat_id] = event_queue
 
-    # Send token update to SSE stream
-    try:
-        event_queue.put_nowait({
-            "e": "token_update",
-            "tokens_remaining": current_user.tokens_remaining,
-            "reset_in_hours": current_user.get_time_until_reset()
-        })
-    except Exception as e:
-        print(f"Failed to send token update: {e}")
-
     # Start agent task in background
     async def agent_task():
         try:
             await agent_service.run_agent_stream(
                 prompt=prompt, id=chat_id, event_queue=event_queue,
-                model_choice=model_choice, is_first_message=True
+                openrouter_api_key=openrouter_api_key, builder_model=model_choice,
+                is_first_message=True,
             )
         except Exception as e:
             print(f"Agent error: {e}")
@@ -229,10 +207,8 @@ async def create_project(
 
     return {
         "status": "success",
-        "message": f"Chat created and agent started.",
+        "message": "Chat created and agent started.",
         "chat_id": chat_id,
-        "tokens_remaining": current_user.tokens_remaining,
-        "reset_in_hours": current_user.get_time_until_reset()
     }
 
 
@@ -614,26 +590,6 @@ async def send_message(
     if chat.user_id != current_user.id:
         raise HTTPException(status_code=403, detail="Unauthorized: Chat belongs to another user")
 
-    # Check token availability
-    if not current_user.can_make_query():
-        hours_remaining = current_user.get_time_until_reset()
-        return JSONResponse(
-            {
-                "error": "No tokens remaining",
-                "message": f"You have used all your tokens. Your 5 tokens will reset in {hours_remaining:.1f} hours.",
-                "tokens_remaining": current_user.tokens_remaining,
-                "reset_in_hours": hours_remaining
-            },
-            status_code=429
-        )
-
-    # Use one token
-    if not current_user.use_token():
-        raise HTTPException(status_code=500, detail="Failed to consume token")
-
-    await db.commit()
-    await db.refresh(current_user)
-
     # Check if agent is already running
     if id in active_runs:
         raise HTTPException(
@@ -657,24 +613,20 @@ async def send_message(
         event_queue = asyncio.Queue()
         active_streams[id] = event_queue
 
-    # Send token update to SSE stream
-    try:
-        event_queue.put_nowait({
-            "e": "token_update",
-            "tokens_remaining": current_user.tokens_remaining,
-            "reset_in_hours": current_user.get_time_until_reset()
-        })
-    except Exception as e:
-        print(f"Failed to send token update: {e}")
+    # Decrypt user's OpenRouter API key for follow-up messages
+    if not current_user.encrypted_openrouter_key:
+        raise HTTPException(status_code=400, detail="Please add your OpenRouter API key in Settings before building.")
+    openrouter_api_key = decrypt_api_key(current_user.encrypted_openrouter_key)
 
-    # Start agent task (read model_choice from the chat record so follow-ups use the same model)
-    chat_model_choice = getattr(chat, "model_choice", "gemini") or "gemini"
+    # Read model_choice from the chat record so follow-ups use the same model
+    chat_model_choice = getattr(chat, "model_choice", DEFAULT_BUILDER_MODEL) or DEFAULT_BUILDER_MODEL
 
     async def agent_task():
         try:
             await agent_service.run_agent_stream(
                 prompt=prompt, id=id, event_queue=event_queue,
-                model_choice=chat_model_choice, is_first_message=False
+                openrouter_api_key=openrouter_api_key, builder_model=chat_model_choice,
+                is_first_message=False,
             )
         except Exception as e:
             print(f"Error in agent task for project {id}: {e}")
@@ -709,6 +661,4 @@ async def send_message(
     return {
         "status": "accepted",
         "message": "Message received and agent started",
-        "tokens_remaining": current_user.tokens_remaining,
-        "reset_in_hours": current_user.get_time_until_reset()
     }

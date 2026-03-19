@@ -123,6 +123,7 @@ export function handleSSEMessage(event: MessageEvent, handlers: SSEHandlers) {
       data.e === "workflow_started" ||
       data.e === "planner_started"
     ) {
+      handlers.setIsSending(false);
       handlers.setIsBuilding(true);
     }
 
@@ -162,14 +163,29 @@ export function handleSSEMessage(event: MessageEvent, handlers: SSEHandlers) {
       handlers.setError((data.message as string) || "An error occurred");
     }
 
-    if (data.e === "token_update" || data.tokens_remaining !== undefined) {
-      const user = JSON.parse(localStorage.getItem("user_data") || "{}");
-      user.tokens_remaining = data.tokens_remaining;
-      if (data.reset_in_hours !== undefined) {
-        user.reset_in_hours = data.reset_in_hours;
-      }
-      localStorage.setItem("user_data", JSON.stringify(user));
-      handlers.setUserData(user);
+    if (data.e === "chat_response") {
+      const message = (data.message as string) || "";
+      if (!message) return;
+
+      handlers.setIsSending(false);
+      handlers.setIsBuilding(false);
+      handlers.setMessages((prev) => {
+        const lastMsg = prev[prev.length - 1];
+        if (lastMsg?.role === "assistant") {
+          return [...prev.slice(0, -1), { ...lastMsg, content: message }];
+        }
+        return [
+          ...prev,
+          {
+            id: Date.now().toString() + "-chat",
+            role: "assistant" as const,
+            content: message,
+            created_at: new Date().toISOString(),
+            event_type: "chat_response",
+          },
+        ];
+      });
+      return;
     }
 
     if (data.e === "thinking") {

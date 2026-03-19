@@ -5,7 +5,7 @@ import asyncio
 from typing import List
 from .graph_state import GraphState
 from .tools import create_tools_with_context
-from .agent import llm_gemini_pro, llm_gemini_flash, llm_claude_sonnet, llm_claude_haiku
+from .agent import create_llm, get_fast_model
 from .formatters import (
     create_formatted_message,
     format_plan_as_markdown,
@@ -169,7 +169,12 @@ async def enhancer_node(state: GraphState, config: RunnableConfig) -> dict:
             HumanMessage(content=user_prompt),
         ]
 
-        response = await llm_gemini_flash.ainvoke(messages)
+        api_key = configurable.get("openrouter_api_key")
+        builder_model = state.get("builder_model", "google/gemini-2.5-pro")
+        fast_model = get_fast_model(builder_model)
+        llm = create_llm(api_key, fast_model)
+        print(f"Enhancer node: Using {fast_model} via OpenRouter")
+        response = await llm.ainvoke(messages)
         enhanced = response.content.strip()
 
         print(f"Enhancer node: enhanced prompt: {enhanced[:120]}")
@@ -205,8 +210,8 @@ async def planner_node(state: GraphState, config: RunnableConfig) -> dict:
             )
 
         enhanced_prompt = state.get("enhanced_prompt", state.get("user_prompt", ""))
-        print(f"INFO: Received prompt for project {project_id if 'project_id' in state else '(unknown)'}")
         project_id = state.get("project_id", "")
+        print(f"INFO: Received prompt for project {project_id or '(unknown)'}")
         print(f"INFO: Project ID: {project_id}")
 
         previous_context = ""
@@ -299,7 +304,12 @@ async def planner_node(state: GraphState, config: RunnableConfig) -> dict:
         )
 
         # Structured output — validates the plan against PlanSchema; no manual JSON parsing needed
-        plan_result = await llm_gemini_flash.with_structured_output(PlanSchema).ainvoke(messages)
+        api_key = configurable.get("openrouter_api_key")
+        builder_model = state.get("builder_model", "google/gemini-2.5-pro")
+        fast_model = get_fast_model(builder_model)
+        llm = create_llm(api_key, fast_model)
+        print(f"Planner node: Using {fast_model} via OpenRouter")
+        plan_result = await llm.with_structured_output(PlanSchema).ainvoke(messages)
         plan = plan_result.model_dump()
 
         # Create formatted plan message
@@ -440,13 +450,10 @@ async def builder_node(state: GraphState, config: RunnableConfig) -> dict:
             HumanMessage(content=builder_prompt),
         ]
 
-        model_choice = state.get("model_choice", "gemini")
-        if model_choice == "claude" and llm_claude_sonnet is not None:
-            builder_llm = llm_claude_sonnet
-            print("Builder node: Using Claude Sonnet 4")
-        else:
-            builder_llm = llm_gemini_pro
-            print("Builder node: Using Gemini 2.5 Pro")
+        api_key = configurable.get("openrouter_api_key")
+        builder_model = state.get("builder_model", "google/gemini-2.5-pro")
+        builder_llm = create_llm(api_key, builder_model)
+        print(f"Builder node: Using {builder_model} via OpenRouter")
         agent_executor = create_react_agent(builder_llm, tools=base_tools)
         agent_config = {"recursion_limit": 50}
 
@@ -595,13 +602,11 @@ async def code_validator_node(state: GraphState, config: RunnableConfig) -> dict
             HumanMessage(content="Begin your validation pass now. Start with check_missing_packages()."),
         ]
 
-        model_choice = state.get("model_choice", "gemini")
-        if model_choice == "claude" and llm_claude_haiku is not None:
-            validator_llm = llm_claude_haiku
-            print("Validator node: Using Claude Haiku 4.5")
-        else:
-            validator_llm = llm_gemini_flash
-            print("Validator node: Using Gemini 2.5 Flash")
+        api_key = configurable.get("openrouter_api_key")
+        builder_model = state.get("builder_model", "google/gemini-2.5-pro")
+        fast_model = get_fast_model(builder_model)
+        validator_llm = create_llm(api_key, fast_model)
+        print(f"Validator node: Using {fast_model} via OpenRouter")
         validator_agent = create_react_agent(validator_llm, tools=base_tools)
         agent_config = {"recursion_limit": 50}
 

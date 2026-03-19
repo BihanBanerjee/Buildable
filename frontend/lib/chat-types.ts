@@ -34,14 +34,13 @@ export interface SSEMessage {
   tool_name?: string;
   tool_input?: Record<string, any>;
   tool_output?: string | object;
-  tokens_remaining?: number;
-  reset_in_hours?: number;
   [key: string]: unknown;
 }
 
 export interface SSEHandlers {
   setCurrentTool: (tool: ActiveToolCall | null) => void;
   setIsBuilding: (isBuilding: boolean) => void;
+  setIsSending: (isSending: boolean) => void;
   pollUrlUntilReady: (url: string) => void;
   setMessages: React.Dispatch<React.SetStateAction<Message[]>>;
   setAppUrl: (url: string | null) => void;

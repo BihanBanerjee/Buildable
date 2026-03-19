@@ -32,8 +32,8 @@ class GraphState(TypedDict):
     current_node: str
     execution_log: Annotated[List[Dict[str, Any]], operator.add]
 
-    # Model selection — "gemini" (gemini-2.5-pro) or "claude" (claude-sonnet-4-5)
-    model_choice: str
+    # Full OpenRouter model ID for the builder node (e.g. "google/gemini-2.5-pro")
+    builder_model: str
 
     # Results
     success: bool
