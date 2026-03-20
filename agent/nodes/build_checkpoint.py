@@ -44,7 +44,15 @@ async def build_checkpoint_node(state: GraphState, config: RunnableConfig) -> di
                 "tool_input": {"command": f"npm install {' '.join(missing)}"},
             })
             install_cmd = f"npm install {' '.join(missing)}"
-            await sandbox.commands.run(install_cmd, cwd=path, timeout=120)
+            try:
+                await sandbox.commands.run(install_cmd, cwd=path, timeout=120)
+            except Exception:
+                # Fallback for React 19 peer dep conflicts
+                try:
+                    await sandbox.commands.run(f"{install_cmd} --legacy-peer-deps", cwd=path, timeout=120)
+                    print(f"Build checkpoint: installed with --legacy-peer-deps")
+                except Exception as e:
+                    print(f"Build checkpoint: npm install failed: {e}")
             safe_send_event(event_queue, {
                 "e": "tool_completed",
                 "tool_name": "execute_command",

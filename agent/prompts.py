@@ -49,6 +49,7 @@ SIMPLICITY RULES:
 - Prefer simple CSS charts or lightweight libs over heavy charting libraries unless charts are a core feature
 - Keep dependencies MINIMAL — every extra package slows down the build
 - Target 8-15 files maximum. If you're planning 20+ files, you're over-engineering
+- IMPORTANT: The app uses React 19. Only use libraries that support React 19. Avoid react-beautiful-dnd (use @hello-pangea/dnd or @dnd-kit/core instead), avoid old versions of react-spring, react-transition-group, etc.
 
 Output a JSON object with exactly these keys:
 - "overview": 1-2 sentence description of the app

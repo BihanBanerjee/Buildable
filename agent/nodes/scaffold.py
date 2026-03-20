@@ -220,7 +220,7 @@ async def scaffold_node(state: GraphState, config: RunnableConfig) -> dict:
 
         safe_send_event(event_queue, {"e": "builder_started", "message": "Generating code for your application..."})
 
-        # Step 1: Install dependencies
+        # Step 1: Install dependencies (with --legacy-peer-deps fallback for React 19 compat)
         if dependencies:
             dep_str = " ".join(dependencies)
             safe_send_event(event_queue, {
@@ -228,14 +228,29 @@ async def scaffold_node(state: GraphState, config: RunnableConfig) -> dict:
                 "tool_name": "execute_command",
                 "tool_input": {"command": f"npm install {dep_str}"},
             })
-            result = await sandbox.commands.run(f"npm install {dep_str}", cwd=path, timeout=120)
+            try:
+                result = await sandbox.commands.run(f"npm install {dep_str}", cwd=path, timeout=120)
+                install_ok = result.exit_code == 0
+            except Exception as install_err:
+                print(f"Scaffold npm install failed, retrying with --legacy-peer-deps: {str(install_err)[:200]}")
+                install_ok = False
+
+            if not install_ok:
+                # Retry with --legacy-peer-deps for packages that don't support React 19 yet
+                try:
+                    result = await sandbox.commands.run(
+                        f"npm install --legacy-peer-deps {dep_str}", cwd=path, timeout=120
+                    )
+                    install_ok = True
+                    print(f"Scaffold npm install succeeded with --legacy-peer-deps")
+                except Exception as retry_err:
+                    print(f"Scaffold npm install failed even with --legacy-peer-deps: {str(retry_err)[:200]}")
+
             safe_send_event(event_queue, {
                 "e": "tool_completed",
                 "tool_name": "execute_command",
-                "tool_output": f"npm install {dep_str}: exit {result.exit_code}",
+                "tool_output": f"npm install {dep_str}: {'ok' if install_ok else 'failed'}",
             })
-            if result.exit_code != 0:
-                print(f"Scaffold npm install failed: {result.stderr[:300]}")
 
         # Step 2: Generate and write App.jsx
         app_jsx_content = _generate_app_jsx(pages, components)
