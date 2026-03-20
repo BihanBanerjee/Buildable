@@ -34,14 +34,22 @@ async def build_checkpoint_node(state: GraphState, config: RunnableConfig) -> di
         path = "/home/user/react-app"
         fixer_retries = state.get("fixer_retries", 0)
 
-        # Only check for missing packages on fixer retries (scaffold handles first install)
-        if fixer_retries > 0:
-            missing = await check_missing_packages_standalone(sandbox)
-            if missing:
-                print(f"Build checkpoint: installing missing packages: {missing}")
-                safe_send_event(event_queue, {"e": "missing_dependencies", "packages": missing})
-                install_cmd = f"npm install {' '.join(missing)}"
-                await sandbox.commands.run(install_cmd, cwd=path, timeout=120)
+        # Always check for missing packages — the builder may use deps not in the plan
+        missing = await check_missing_packages_standalone(sandbox)
+        if missing:
+            print(f"Build checkpoint: installing missing packages: {missing}")
+            safe_send_event(event_queue, {
+                "e": "tool_started",
+                "tool_name": "execute_command",
+                "tool_input": {"command": f"npm install {' '.join(missing)}"},
+            })
+            install_cmd = f"npm install {' '.join(missing)}"
+            await sandbox.commands.run(install_cmd, cwd=path, timeout=120)
+            safe_send_event(event_queue, {
+                "e": "tool_completed",
+                "tool_name": "execute_command",
+                "tool_output": f"Installed: {', '.join(missing)}",
+            })
 
         # Clean Vite cache
         await sandbox.commands.run("rm -rf node_modules/.vite-temp", cwd=path, timeout=10)
