@@ -103,9 +103,34 @@ PRE-FLIGHT CHECK (do this mentally before finishing):
 - No unused imports, no missing imports"""
 
 
-BUILDER_SYSTEM_FOLLOWUP = """You are an expert React developer. Modify an existing React app using the sandbox tools.
+BUILDER_SYSTEM_FOLLOWUP = """You are an expert React developer. Make TARGETED edits to an existing React app.
 
-STARTUP: get_context() → list_directory() → read relevant files only (don't read every file)
+STARTUP: get_context() → list_directory() → read ONLY the files you need to modify
+
+CRITICAL RULE: Make MINIMAL changes. Do NOT rewrite files that don't need changing.
+The app is currently working. Your job is to make a specific change without breaking anything else.
+
+YOUR TOOLS:
+- read_file: Read existing files to understand current code
+- edit_file(path, old_content, new_content): Make surgical edits to existing files. old_content must match EXACTLY.
+- create_file: ONLY for genuinely new files that don't exist yet (new components, new pages)
+- execute_command: For npm install only. Do NOT run builds, dev server, or exploratory commands.
+- list_directory: See the file structure
+- get_context / save_context: Load/save project memory
+
+EDITING STRATEGY:
+1. Read the file you need to change
+2. Use edit_file to replace ONLY the specific part that needs changing
+3. If you need to add imports, use edit_file to add them at the top
+4. If you need to add a new component/page, use create_file for the new file, then edit_file to update routes/imports
+5. NEVER rewrite an entire file with create_file unless it's genuinely new
+
+WHEN TO USE create_file vs edit_file:
+- Adding a new component → create_file (file doesn't exist yet)
+- Adding a context provider → create_file for the new context file, then edit_file on App.jsx to wrap with provider
+- Changing a color/style → edit_file on the specific component
+- Adding a feature to existing component → edit_file
+- Rewriting a file you didn't write → NEVER. Use edit_file for targeted changes.
 
 ENVIRONMENT:
 - React + Vite + Tailwind CSS v4 + react-router-dom + react-icons
@@ -113,23 +138,17 @@ ENVIRONMENT:
 - Tailwind v4 is active
 - Dev server running on port 5173 — DO NOT run `npm run dev`
 
-ROUTING:
-- If adding new pages: update App.jsx routes using create_file
-- Layout routes: use <Outlet /> from react-router-dom, NEVER {children}
-
 FILE RULES:
 - Components: flat in src/components/ (NEVER subdirectories)
 - Pages import with '../': `import X from '../components/X'`
 - Components import siblings with './': `import Y from './Y'`
 - export default for all components and pages
 
-WRITING STRATEGY:
-- Use write_multiple_files for new files, create_file for updates
-- Write complete code — no placeholders
-
 RULES:
 - Do NOT run test builds, vite builds, or npm run build
-- Do NOT install packages more than once
+- Do NOT install packages unless you're adding a genuinely new dependency
+- Do NOT rewrite existing working code — edit it surgically
+- Do NOT change libraries (e.g., don't swap @hello-pangea/dnd for @dnd-kit)
 
 FINISH: save_context() with semantic + procedural + episodic summaries."""
 
@@ -195,15 +214,17 @@ YOUR JOB:
 Do NOT touch main.jsx or index.css. Do NOT run npm install.
 Build EVERY component and page file. Do not stop early."""
     else:
-        return f"""PLAN: {compact_plan}
+        return f"""USER REQUEST + PLAN: {compact_plan}
 
 STEPS:
-1. get_context() — check what was built before
-2. list_directory() + read only the files you need to modify
-3. write_multiple_files for new files, create_file for updates
-4. save_context() with what you changed
+1. get_context() — understand what was built before
+2. list_directory() to see current structure
+3. read ONLY the files that need to change
+4. Use edit_file for surgical modifications to existing files
+5. Use create_file ONLY for genuinely new files
+6. save_context() with what you changed
 
-Build EVERY file from the plan. Do not stop early."""
+REMEMBER: The app is working. Make ONLY the changes the user asked for. Do NOT rewrite existing files."""
 
 
 def get_fixer_prompt(build_errors: str, plan: dict = None, error_type: str = "build") -> str:

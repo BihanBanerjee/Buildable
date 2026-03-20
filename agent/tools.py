@@ -53,7 +53,7 @@ def create_tools(
 
     Modes:
       - "first_build":  create_file, write_multiple_files  (2 tools — no exec, scaffold handles deps)
-      - "follow_up":    + read_file, execute_command, list_directory, get_context, save_context  (7 tools)
+      - "follow_up":    read_file, edit_file, create_file, execute_command, list_directory, get_context, save_context  (7 tools — edit_file for surgical changes)
       - "fixer":        read_file, create_file, execute_command (restricted to npm install only)  (3 tools)
     """
 
@@ -164,6 +164,39 @@ def create_tools(
             return f"Failed to create multiple files: {str(e)}"
 
     @tool
+    async def edit_file(file_path: str, old_content: str, new_content: str) -> str:
+        """Edit a file by replacing old_content with new_content. Use for surgical edits to existing files.
+        The old_content must match EXACTLY (including whitespace/indentation).
+        For multiple edits to the same file, call this tool multiple times."""
+        try:
+            full_path = os.path.join("/home/user/react-app", file_path)
+            current = await sandbox.files.read(full_path)
+
+            if old_content not in current:
+                # Try trimmed match as fallback
+                trimmed_current = current.strip()
+                trimmed_old = old_content.strip()
+                if trimmed_old in trimmed_current:
+                    current = current.replace(old_content.strip(), new_content.strip())
+                else:
+                    return (
+                        f"ERROR: old_content not found in {file_path}. "
+                        "Make sure it matches exactly (read the file first). "
+                        f"File length: {len(current)} chars."
+                    )
+            else:
+                current = current.replace(old_content, new_content, 1)
+
+            await sandbox.files.write(full_path, current)
+            if files_tracker is not None and file_path not in files_tracker:
+                files_tracker.append(file_path)
+            safe_send_event(event_queue, {"e": "file_edited", "message": f"Edited {file_path}"})
+            return f"File {file_path} edited successfully."
+        except Exception as e:
+            safe_send_event(event_queue, {"e": "file_error", "message": f"Failed to edit {file_path}: {str(e)}"})
+            return f"Failed to edit file {file_path}: {str(e)}"
+
+    @tool
     async def list_directory(path: str = ".") -> str:
         """List directory tree (excludes node_modules)."""
         try:
@@ -235,8 +268,8 @@ def create_tools(
 
     elif mode == "follow_up":
         return [
-            create_file, read_file, execute_command,
-            list_directory, write_multiple_files,
+            read_file, edit_file, create_file,
+            execute_command, list_directory,
             get_context, save_context,
         ]
 

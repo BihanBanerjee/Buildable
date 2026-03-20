@@ -11,6 +11,7 @@ function extractToolDetail(
     case "read_file":
     case "write_file":
     case "delete_file":
+    case "edit_file":
       return input.file_path || input.path || "";
     case "execute_command":
       return input.command || "";

@@ -30,6 +30,7 @@ interface MessageBubbleProps {
 const TOOL_LABELS: Record<string, string> = {
   create_file: "Created",
   read_file: "Read",
+  edit_file: "Edited",
   write_file: "Updated",
   delete_file: "Deleted",
   execute_command: "Ran",
@@ -43,6 +44,7 @@ const TOOL_LABELS: Record<string, string> = {
 const TOOL_RUNNING_LABELS: Record<string, string> = {
   create_file: "Creating",
   read_file: "Reading",
+  edit_file: "Editing",
   write_file: "Updating",
   delete_file: "Deleting",
   execute_command: "Running",
