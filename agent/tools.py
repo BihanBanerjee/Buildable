@@ -17,11 +17,24 @@ async def check_missing_packages_standalone(sandbox: AsyncSandbox) -> list[str]:
         result = await sandbox.commands.run(
             "grep -roh \"from ['\\\"][^'\\\"]*['\\\"]\" src/ 2>/dev/null"
             " | sed \"s/from ['\\\"]//;s/['\\\"]//\" | grep -v '^\\.'"
-            " | cut -d/ -f1 | sort -u",
+            " | sort -u",
             cwd="/home/user/react-app",
             timeout=15,
         )
-        imported = {p.strip() for p in result.stdout.strip().split("\n") if p.strip()}
+        # Extract package names: @scope/name for scoped, name for regular
+        imported = set()
+        for line in result.stdout.strip().split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+            if line.startswith("@"):
+                # Scoped package: @hello-pangea/dnd -> @hello-pangea/dnd
+                parts = line.split("/")
+                if len(parts) >= 2:
+                    imported.add(f"{parts[0]}/{parts[1]}")
+            else:
+                # Regular package: date-fns/format -> date-fns
+                imported.add(line.split("/")[0])
 
         pkg_result = await sandbox.commands.run(
             "node -e \"const p=require('./package.json'); console.log(Object.keys(p.dependencies||{}).join('\\n'))\"",
