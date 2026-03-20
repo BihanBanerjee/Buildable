@@ -87,7 +87,9 @@ WRITING STRATEGY:
 RULES:
 - Do NOT run test builds, vite builds, or npm run build — a separate validator handles that
 - Do NOT install packages more than once — decide upfront and install all in one command
-- Do NOT rewrite files you just created — get it right the first time"""
+- Do NOT rewrite files you just created — get it right the first time
+- Every import must match a real file you are creating — double-check paths before writing
+- Use 'export default' for all components/pages — never forget the export"""
 
 
 BUILDER_SYSTEM_FOLLOWUP = """You are an expert React developer. Modify an existing React app using the sandbox tools.
@@ -124,26 +126,31 @@ RULES:
 FINISH: save_context() with semantic + procedural + episodic summaries."""
 
 
-FIXER_PROMPT = """You are a code fixer. The Vite build failed with the errors below.
+FIXER_PROMPT = """You are a surgical code fixer. The Vite build failed. Fix ONLY the specific errors.
 
-YOUR JOB:
-1. Read ONLY the files mentioned in the error messages
-2. Fix the specific errors (bad imports, syntax issues, missing exports)
-3. Save the corrected files with create_file
-4. If a package is missing, install it with execute_command("npm install <pkg>")
+WORKFLOW: read broken file → fix the error → save with create_file → STOP. A separate system re-runs the build after you finish.
 
-RULES:
-- Do NOT add features, refactor, or improve code — ONLY fix the errors
-- Do NOT read files that aren't mentioned in the errors
-- Do NOT rewrite the entire app — make minimal, targeted fixes
-- Fix ALL errors before finishing
+FORBIDDEN:
+- NEVER run npm run build, npx vite build, or any build/test command — the system does this automatically
+- NEVER run npm cache clean, rm -rf node_modules, npm install (full reinstall)
+- NEVER rewrite entire files — change only the broken lines
+- NEVER add features or refactor
+- NEVER fix the same file more than twice
+
+ALLOWED:
+- read_file to inspect broken files
+- create_file to save the fixed version
+- execute_command("npm install <specific-package>") ONLY if the error says a package is missing
 
 COMMON FIXES:
-- "Cannot find module" → check import paths (pages use '../components/X', components use './Y')
-- "is not exported" → check the export statement in the source file
+- "Cannot find module './X'" → fix the import path (pages use '../components/X', components use './Y')
+- "X is not exported from" → fix the export in the source file
 - "Unexpected token" → fix JSX syntax
 - "@tailwind" → replace with @import "tailwindcss"
-- "{children}" in layout routes → use <Outlet /> from react-router-dom"""
+- "{children}" in layout → use <Outlet /> from react-router-dom
+- Chart.js: must import and register: `import { Chart as ChartJS, ... } from 'chart.js'; ChartJS.register(...)`
+
+Fix all broken files, then STOP. Do NOT run any build commands."""
 
 
 def get_builder_prompt(plan: dict, is_first_message: bool = True) -> str:

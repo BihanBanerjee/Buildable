@@ -89,10 +89,33 @@ def create_tools(
             safe_send_event(event_queue, {"e": "file_error", "message": f"Failed to read {file_path}: {str(e)}"})
             return f"Failed to read file {file_path}: {str(e)}"
 
+    # Track npm install calls to prevent duplicates
+    npm_install_called = {"done": False}
+
     @tool
     async def execute_command(command: str) -> str:
         """Run a shell command in react-app dir."""
         try:
+            # Block destructive and build commands in fixer mode
+            if mode == "fixer":
+                cmd_lower = command.strip().lower()
+                for blocked in ["npm cache clean", "rm -rf node_modules", "rm -rf package-lock"]:
+                    if blocked in cmd_lower:
+                        return f"BLOCKED: '{blocked}' is not allowed. Fix the source files instead."
+                # Block bare "npm install" (full reinstall) but allow "npm install <pkg>"
+                if cmd_lower.strip() in ("npm install", "npm i", "npm ci"):
+                    return "BLOCKED: Full reinstall is not allowed. Use 'npm install <package-name>' for specific packages only."
+                # Block build/test commands — the build checkpoint handles this
+                for build_cmd in ["npm run build", "npx vite build", "npm run dev", "vite build"]:
+                    if build_cmd in cmd_lower:
+                        return "BLOCKED: Do not run builds. The system re-runs the build automatically after you fix the files. Just fix and stop."
+
+            # Prevent duplicate npm install in builder mode
+            if mode == "first_build" and command.strip().startswith("npm install"):
+                if npm_install_called["done"]:
+                    return "SKIPPED: npm install already ran. Dependencies are installed."
+                npm_install_called["done"] = True
+
             safe_send_event(event_queue, {"e": "command_started", "command": command})
             result = await sandbox.commands.run(command, cwd="/home/user/react-app", timeout=120)
 

@@ -87,28 +87,25 @@ async def _stream_agent_events(
     ):
         kind = event["event"]
 
+        # Fast path: skip all token-level events after first thinking message.
+        # This is the most frequent event type and we only need it once.
         if kind == "on_chat_model_stream":
+            if thinking_sent:
+                continue
             content = event["data"]["chunk"].content
             if content:
                 if isinstance(content, list):
-                    text_parts = []
-                    for block in content:
-                        if isinstance(block, str):
-                            text_parts.append(block)
-                        elif isinstance(block, dict) and block.get("type") == "text":
-                            text_parts.append(block.get("text", ""))
-                        elif hasattr(block, "text"):
-                            text_parts.append(block.text)
-                    content = "\n".join(filter(None, text_parts))
-                else:
-                    content = str(content)
-
+                    text_parts = [
+                        (b if isinstance(b, str) else b.get("text", "") if isinstance(b, dict) else getattr(b, "text", ""))
+                        for b in content
+                    ]
+                    content = "".join(filter(None, text_parts))
                 if content:
-                    if not thinking_sent:
-                        safe_send_event(event_queue, {"e": "thinking", "message": content})
-                        thinking_sent = True
+                    safe_send_event(event_queue, {"e": "thinking", "message": content})
+                    thinking_sent = True
+            continue
 
-        elif kind == "on_tool_start":
+        if kind == "on_tool_start":
             tool_name = event.get("name")
             tool_input = event.get("data", {}).get("input", {})
             safe_send_event(event_queue, {
@@ -405,7 +402,7 @@ async def fixer_node(state: GraphState, config: RunnableConfig) -> dict:
         print(f"Fixer node: attempt {fixer_retries + 1}, fixing errors:\n{build_errors[:300]}")
 
         tools = create_tools(sandbox, event_queue, project_id, mode="fixer")
-        fixer_llm = create_llm(api_key, fast_model, max_tokens=8000)
+        fixer_llm = create_llm(api_key, fast_model, max_tokens=4000)
 
         agent_executor = create_react_agent(
             fixer_llm,
@@ -419,10 +416,10 @@ async def fixer_node(state: GraphState, config: RunnableConfig) -> dict:
         try:
             await asyncio.wait_for(
                 _stream_agent_events(agent_executor, messages, config, event_queue, project_id),
-                timeout=300,
+                timeout=120,
             )
         except asyncio.TimeoutError:
-            print("Fixer agent timed out after 5 minutes")
+            print("Fixer agent timed out after 2 minutes")
         except Exception as e:
             print(f"Fixer agent error: {e}")
             traceback.print_exc()
