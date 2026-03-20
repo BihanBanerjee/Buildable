@@ -216,11 +216,39 @@ export function handleSSEMessage(event: MessageEvent, handlers: SSEHandlers) {
       return;
     }
 
+    // Show node-transition status messages so the user sees progress
+    if (
+      data.e === "enhancer_started" ||
+      data.e === "planner_started" ||
+      data.e === "builder_started" ||
+      data.e === "code_validator_started" ||
+      data.e === "app_check_started"
+    ) {
+      const statusText = (data.message as string) || "";
+      if (statusText) {
+        handlers.setMessages((prev) => {
+          const lastMsg = prev[prev.length - 1];
+          if (lastMsg?.role === "assistant" && !lastMsg.tool_calls?.length) {
+            return [...prev.slice(0, -1), { ...lastMsg, content: statusText }];
+          }
+          return [
+            ...prev,
+            {
+              id: Date.now().toString() + "-status",
+              role: "assistant" as const,
+              content: statusText,
+              created_at: new Date().toISOString(),
+              event_type: "status",
+            },
+          ];
+        });
+      }
+      return;
+    }
+
     if (
       data.e === "builder_complete" ||
-      data.e === "code_validator_started" ||
       data.e === "code_validator_complete" ||
-      data.e === "app_check_started" ||
       data.e === "app_check_complete"
     ) {
       return;

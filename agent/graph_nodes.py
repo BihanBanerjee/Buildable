@@ -295,7 +295,7 @@ async def builder_node(state: GraphState, config: RunnableConfig) -> dict:
             safe_send_event(event_queue,
                 {
                     "e": "builder_started",
-                    "message": "Starting to build the application...",
+                    "message": "Generating code for your application...",
                 }
             )
 
@@ -505,7 +505,7 @@ async def code_validator_node(state: GraphState, config: RunnableConfig) -> dict
             safe_send_event(event_queue,
                 {
                     "e": "code_validator_started",
-                    "message": "Code validator agent reviewing and fixing code...",
+                    "message": "Validating and fixing any issues...",
                 }
             )
 
@@ -660,7 +660,7 @@ async def application_checker_node(state: GraphState, config: RunnableConfig) ->
             safe_send_event(event_queue,
                 {
                     "e": "app_check_started",
-                    "message": "Checking application status and capturing errors...",
+                    "message": "Starting your app and running final checks...",
                 }
             )
 
