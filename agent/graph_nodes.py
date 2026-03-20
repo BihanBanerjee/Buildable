@@ -128,7 +128,7 @@ async def _stream_agent_events(
             })
 
             # Collect for batch DB write (compact: name + truncated output)
-            tool_log.append({"name": tool_name, "output": tool_output[:150]})
+            tool_log.append({"name": tool_name, "status": "success", "output": tool_output[:150]})
 
     # Flush all tool calls as ONE DB row instead of N individual writes
     if tool_log:

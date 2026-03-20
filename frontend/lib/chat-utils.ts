@@ -89,6 +89,7 @@ export function consolidateMessages(msgs: Message[]): Message[] {
     "thinking",
     "tool_started",
     "tool_completed",
+    "tool_summary",
     "planner_complete",
     "builder_complete",
     "validator_complete",
@@ -143,7 +144,12 @@ export function consolidateMessages(msgs: Message[]): Message[] {
             if (!currentAssistantGroup.tool_calls) {
               currentAssistantGroup.tool_calls = [];
             }
-            currentAssistantGroup.tool_calls.push(...msg.tool_calls);
+            // Default missing status to "success" (DB-stored tool_calls may lack status)
+            const normalized = msg.tool_calls.map((t) => ({
+              ...t,
+              status: t.status || ("success" as const),
+            }));
+            currentAssistantGroup.tool_calls.push(...normalized);
           }
         } else {
           currentAssistantGroup = {
