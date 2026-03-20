@@ -348,6 +348,7 @@ async def builder_node(state: GraphState, config: RunnableConfig) -> dict:
             sandbox, event_queue, project_id,
             files_tracker=files_tracker,
             first_build=is_first_message,
+            include_test_build=False,  # Builder should NOT self-test; that's the validator's job
         )
 
         if current_errors:

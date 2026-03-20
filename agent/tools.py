@@ -306,13 +306,12 @@ def create_tools_with_context(
         ]
 
     # First build: minimal tool set (fewer tools = smaller schema = fewer tokens per LLM call)
+    # check_missing_packages excluded — validator handles package checks
     if first_build:
         tools = [
             create_file,
-            read_file,
             execute_command,
             write_multiple_files,
-            check_missing_packages,
         ]
     else:
         # Follow-up builds get the full tool set

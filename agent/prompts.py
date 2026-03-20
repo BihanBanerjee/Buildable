@@ -197,11 +197,15 @@ def get_builder_prompt(plan: dict, is_first_message: bool = True) -> str:
         return f"""PLAN: {compact_plan}
 
 STEPS:
-1. Install extra dependencies if any: execute_command("npm install <pkg1> <pkg2>")
+1. Install ALL extra dependencies in ONE command: execute_command("npm install <pkg1> <pkg2> ...")
 2. write_multiple_files with ALL new files in ONE call — complete code, no placeholders
 3. create_file ONLY for updating existing files (App.jsx, index.css)
 
-Build EVERY file from the plan. Do not stop early. Do NOT read files first."""
+RULES:
+- Do NOT run test builds, vite builds, or npm run build — a separate validator handles that
+- Do NOT install packages more than once — decide upfront and install all in step 1
+- Do NOT rewrite files you just created — get it right the first time
+- Build EVERY file from the plan. Do not stop early. Do NOT read files first."""
     else:
         return f"""PLAN: {compact_plan}
 
