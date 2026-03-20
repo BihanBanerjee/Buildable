@@ -120,6 +120,7 @@ export function handleSSEMessage(event: MessageEvent, handlers: SSEHandlers) {
     if (
       data.e === "started" ||
       data.e === "builder_started" ||
+      data.e === "scaffold_started" ||
       data.e === "workflow_started" ||
       data.e === "planner_started"
     ) {
@@ -130,7 +131,7 @@ export function handleSSEMessage(event: MessageEvent, handlers: SSEHandlers) {
     // Track build stage for the progress stepper
     if (data.e === "enhancer_started") handlers.setBuildStage("enhancer");
     if (data.e === "planner_started") handlers.setBuildStage("planner");
-    if (data.e === "builder_started") handlers.setBuildStage("builder");
+    if (data.e === "scaffold_started" || data.e === "builder_started") handlers.setBuildStage("builder");
     if (data.e === "code_validator_started") handlers.setBuildStage("validator");
     if (data.e === "app_check_started") handlers.setBuildStage("app_check");
 
@@ -165,6 +166,8 @@ export function handleSSEMessage(event: MessageEvent, handlers: SSEHandlers) {
       handlers.setCurrentTool(null);
       handlers.setBuildStage("completed");
 
+      const duration = (data.duration_s as number) || undefined;
+
       // Mark last message as completed AND force-resolve any stuck tool_calls
       handlers.setMessages((prev) => {
         return prev.map((msg, idx) => {
@@ -173,11 +176,14 @@ export function handleSSEMessage(event: MessageEvent, handlers: SSEHandlers) {
               t.status === "running" ? { ...t, status: "success" as const } : t,
             );
             const updates: Record<string, unknown> = { tool_calls: resolvedCalls };
-            if (idx === prev.length - 1) updates.isCompleted = true;
+            if (idx === prev.length - 1) {
+              updates.isCompleted = true;
+              if (duration) updates.buildDuration = duration;
+            }
             return { ...msg, ...updates };
           }
           if (idx === prev.length - 1 && msg.role === "assistant") {
-            return { ...msg, isCompleted: true };
+            return { ...msg, isCompleted: true, ...(duration ? { buildDuration: duration } : {}) };
           }
           return msg;
         });
@@ -245,10 +251,29 @@ export function handleSSEMessage(event: MessageEvent, handlers: SSEHandlers) {
       return;
     }
 
+    // Progress pulses during long code generation — show animated writing status
+    if (data.e === "progress") {
+      const progressText = (data.message as string) || "Generating code...";
+
+      handlers.setMessages((prev) => {
+        const lastMsg = prev[prev.length - 1];
+        // Update content of existing assistant message (even if it has tool_calls)
+        if (lastMsg?.role === "assistant") {
+          return [
+            ...prev.slice(0, -1),
+            { ...lastMsg, content: progressText },
+          ];
+        }
+        return prev;
+      });
+      return;
+    }
+
     // Show node-transition status messages so the user sees progress
     if (
       data.e === "enhancer_started" ||
       data.e === "planner_started" ||
+      data.e === "scaffold_started" ||
       data.e === "builder_started" ||
       data.e === "code_validator_started" ||
       data.e === "app_check_started"

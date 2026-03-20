@@ -3,20 +3,23 @@ import operator
 
 
 class GraphState(TypedDict):
-    """State schema for the 2-agent + deterministic checkpoint orchestration.
+    """State schema for the 5-node orchestration.
 
-    Pipeline: planner_builder → build_checkpoint ⇄ fixer → app_start
+    Pipeline: planner → scaffold → builder → build_checkpoint ⇄ fixer → app_start
     """
 
     project_id: str
     user_prompt: str
     is_first_message: bool
 
-    # Plan (produced by planner_builder, used for description/summary)
+    # Plan (produced by planner, consumed by scaffold + builder + fixer)
     plan: Optional[Dict[str, Any]]
 
-    # Files tracking (accumulates across fixer retries)
+    # Files tracking (accumulates across nodes via operator.add)
     files_created: Annotated[List[str], operator.add]
+
+    # Scaffold status (lets build_checkpoint skip npm install on first pass)
+    scaffold_complete: bool
 
     # Build checkpoint results
     build_passed: bool

@@ -7,6 +7,7 @@ export interface Message {
   event_type?: string;
   isCompleted?: boolean;
   summary?: string;
+  buildDuration?: number;
   tool_calls?: Array<{
     name: string;
     status: "success" | "error" | "running";

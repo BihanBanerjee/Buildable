@@ -1,5 +1,6 @@
 from e2b_code_interpreter import AsyncSandbox
 import asyncio
+import re
 from langchain_core.tools import tool
 import os
 import json
@@ -29,12 +30,16 @@ async def check_missing_packages_standalone(sandbox: AsyncSandbox) -> list[str]:
         )
         installed = {p.strip() for p in pkg_result.stdout.strip().split("\n") if p.strip()}
 
-        builtin = {"react", "react-dom"}
+        builtin = {"react", "react-dom", "react-router-dom", "react-icons"}
         return sorted(imported - installed - builtin)
 
     except Exception as e:
         print(f"check_missing_packages_standalone failed: {e}")
         return []
+
+
+# Regex for validating fixer npm install commands
+_NPM_INSTALL_RE = re.compile(r"^npm install [a-zA-Z0-9@/._-]+( [a-zA-Z0-9@/._-]+)*$")
 
 
 def create_tools(
@@ -47,9 +52,9 @@ def create_tools(
     """Create tools for a specific agent mode.
 
     Modes:
-      - "first_build":  create_file, execute_command, write_multiple_files  (3 tools)
-      - "follow_up":    + read_file, list_directory, get_context, save_context  (7 tools)
-      - "fixer":        read_file, create_file, execute_command  (3 tools)
+      - "first_build":  create_file, write_multiple_files  (2 tools — no exec, scaffold handles deps)
+      - "follow_up":    + read_file, execute_command, list_directory, get_context, save_context  (7 tools)
+      - "fixer":        read_file, create_file, execute_command (restricted to npm install only)  (3 tools)
     """
 
     def safe_send_event(queue: asyncio.Queue, data: dict) -> bool:
@@ -89,18 +94,16 @@ def create_tools(
             safe_send_event(event_queue, {"e": "file_error", "message": f"Failed to read {file_path}: {str(e)}"})
             return f"Failed to read file {file_path}: {str(e)}"
 
-    # Track npm install calls to prevent duplicates
-    npm_install_called = {"done": False}
-
     @tool
     async def execute_command(command: str) -> str:
         """Run a shell command in react-app dir."""
         try:
-            # Prevent duplicate npm install in builder mode
-            if mode == "first_build" and command.strip().startswith("npm install"):
-                if npm_install_called["done"]:
-                    return "SKIPPED: npm install already ran. Dependencies are installed."
-                npm_install_called["done"] = True
+            cmd_lower = command.strip().lower()
+
+            # Fixer mode: ONLY allow "npm install <packages>"
+            if mode == "fixer":
+                if not _NPM_INSTALL_RE.match(command.strip()):
+                    return "ERROR: Fixer can only run 'npm install <package>' commands. Use read_file and create_file for code fixes."
 
             safe_send_event(event_queue, {"e": "command_started", "command": command})
             result = await sandbox.commands.run(command, cwd="/home/user/react-app", timeout=120)
@@ -228,7 +231,7 @@ def create_tools(
     # ── Assemble tool list by mode ───────────────────────────
 
     if mode == "first_build":
-        return [create_file, execute_command, write_multiple_files]
+        return [create_file, write_multiple_files]
 
     elif mode == "follow_up":
         return [
@@ -238,7 +241,7 @@ def create_tools(
         ]
 
     elif mode == "fixer":
-        return [read_file, create_file]
+        return [read_file, create_file, execute_command]
 
     else:
         raise ValueError(f"Unknown tool mode: {mode}")

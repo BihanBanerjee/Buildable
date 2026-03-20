@@ -1,5 +1,5 @@
-import React from "react";
-import { Loader2, CheckCircle2, AlertCircle } from "lucide-react";
+import React, { useState, useEffect, useRef } from "react";
+import { Loader2, CheckCircle2, AlertCircle, Clock } from "lucide-react";
 
 interface ToolCall {
   name: string;
@@ -17,6 +17,7 @@ interface Message {
   event_type?: string;
   isCompleted?: boolean;
   summary?: string;
+  buildDuration?: number;
   tool_calls?: ToolCall[];
 }
 
@@ -94,6 +95,31 @@ function parseDetailFromInput(name: string, input?: string): string {
     if (cmdMatch) return cmdMatch[1];
     return "";
   }
+}
+
+function formatDuration(seconds: number): string {
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  const mins = Math.floor(seconds / 60);
+  const secs = Math.round(seconds % 60);
+  return secs > 0 ? `${mins}m ${secs}s` : `${mins}m`;
+}
+
+/** Live elapsed-time counter — ticks every second while visible. */
+function ElapsedTimer() {
+  const startRef = useRef(Date.now());
+  const [elapsed, setElapsed] = useState(0);
+
+  useEffect(() => {
+    const id = setInterval(() => setElapsed(Math.floor((Date.now() - startRef.current) / 1000)), 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  return (
+    <span className="inline-flex items-center gap-1 text-xs text-muted-foreground ml-2 tabular-nums">
+      <Clock size={11} className="shrink-0" />
+      {formatDuration(elapsed)}
+    </span>
+  );
 }
 
 function getCleanContent(content: string): string {
@@ -238,6 +264,12 @@ export function MessageBubble({ message, isLastMessage }: MessageBubbleProps) {
             <span className="text-sm text-primary font-medium">
               Your app is ready
             </span>
+            {message.buildDuration && (
+              <span className="inline-flex items-center gap-1 text-xs text-muted-foreground ml-auto tabular-nums">
+                <Clock size={11} className="shrink-0" />
+                {formatDuration(message.buildDuration)}
+              </span>
+            )}
           </div>
         )}
 
@@ -245,6 +277,7 @@ export function MessageBubble({ message, isLastMessage }: MessageBubbleProps) {
           <div className="flex items-center gap-2">
             <Loader2 size={13} className="animate-spin text-muted-foreground" />
             <span className="text-sm text-muted-foreground">Thinking...</span>
+            <ElapsedTimer />
           </div>
         )}
       </div>

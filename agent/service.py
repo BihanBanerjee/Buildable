@@ -53,9 +53,6 @@ class Service:
                 print(f"Extended timeout for existing sandbox: {id}")
                 return self.sandboxes[id]
             else:
-                # Sandbox expired, clean up. The E2B sandbox may already be
-                # dead server-side, so kill() is best-effort — don't let it
-                # crash the recreation path if it throws.
                 print(f"Sandbox expired for project {id}, recreating...")
                 try:
                     await self.sandboxes[id].kill()
@@ -63,9 +60,7 @@ class Service:
                     print(f"Failed to kill expired sandbox (likely already dead): {kill_err}")
                 del self.sandboxes[id]
 
-        # Cache miss — try to reconnect to an existing E2B sandbox before
-        # creating a new one. Reconnect succeeds when the server restarted
-        # but the E2B sandbox is still alive within its 30-min TTL.
+        # Cache miss — try to reconnect to an existing E2B sandbox
         sandbox, is_new = await self._try_reconnect_sandbox(id)
         self.sandboxes[id] = sandbox
         await sandbox.set_timeout(self.sandbox_timeout)
@@ -73,19 +68,12 @@ class Service:
         print(f"Sandbox ready for project {id} (new={is_new})")
 
         if is_new:
-            # Only restore files into a freshly-created sandbox; a reconnected
-            # sandbox already has all files from the previous session.
             await self._restore_files_from_disk(id, sandbox)
 
         return sandbox
 
     async def _try_reconnect_sandbox(self, project_id: str) -> tuple:
-        """Reconnect to a previous sandbox if its ID is stored in metadata,
-        otherwise create a fresh one.
-
-        Returns (sandbox, is_new) where is_new=False means the sandbox is
-        already populated with files and does NOT need _restore_files_from_disk.
-        """
+        """Reconnect to a previous sandbox or create a fresh one."""
         metadata_file = os.path.join(self.storage_base_path, project_id, "metadata.json")
         sandbox_id = None
         if os.path.exists(metadata_file):
@@ -164,12 +152,11 @@ class Service:
         await asyncio.gather(*[write_one(p) for p in files])
         print(f"File restoration complete for project {project_id}")
 
-        # Clean Vite cache to prevent permission issues
+        # Clean Vite cache
         try:
             await sandbox.commands.run(
                 "rm -rf node_modules/.vite-temp", cwd="/home/user/react-app"
             )
-            print("Cleaned Vite cache after restoration")
         except Exception as e:
             print(f"Failed to clean Vite cache: {e}")
 
@@ -179,10 +166,8 @@ class Service:
     ):
         """Save conversation history and merge newly created files into context.json."""
         try:
-            # Load existing context
             context = load_json_store(project_id, "context.json")
 
-            # Update conversation history
             conversation_history = context.get("conversation_history", [])
             conversation_history.append({
                 "timestamp": time.time(),
@@ -190,34 +175,22 @@ class Service:
                 "success": success,
                 "date": datetime.now().isoformat(),
             })
-            # Keep only last 10 conversations to avoid bloat
             if len(conversation_history) > 10:
                 conversation_history = conversation_history[-10:]
             context["conversation_history"] = conversation_history
 
-            # Merge newly created files into the files_created list.
-            # Uses dict.fromkeys to deduplicate while preserving insertion order;
-            # existing files from previous sessions are kept so the planner always
-            # sees the full project file count, not just the current session's files.
             if files_created:
                 existing = context.get("files_created", [])
                 context["files_created"] = list(dict.fromkeys(existing + files_created))
 
             save_json_store(project_id, "context.json", context)
-
             print(f"Saved conversation history for project {project_id}")
 
         except Exception as e:
             print(f"Failed to save conversation history: {e}")
 
     async def snapshot_project_files(self, project_id: str):
-        """Snapshot all source files from sandbox to disk.
-
-        Uses a single find command + concurrent asyncio.gather reads instead of
-        the previous per-path type-check loop, reducing wall time from O(N*rtt)
-        to O(1*rtt + N*parallel_rtt).  Also persists sandbox_id so the service
-        can reconnect to this sandbox after a server restart instead of creating a new one.
-        """
+        """Snapshot all source files from sandbox to disk."""
         if project_id not in self.sandboxes:
             return
 
@@ -225,7 +198,6 @@ class Service:
         project_dir = os.path.join(self.storage_base_path, project_id)
         os.makedirs(project_dir, exist_ok=True)
 
-        # Collect all relevant file paths with a single shell command
         find_result = await sandbox.commands.run(
             "find src public -type f 2>/dev/null; "
             "test -f package.json && echo package.json; "
@@ -242,7 +214,6 @@ class Service:
             print(f"No files found to snapshot for project {project_id}")
             return
 
-        # Read all files concurrently instead of serially
         async def read_and_save(file_path: str):
             try:
                 content = await sandbox.files.read(f"/home/user/react-app/{file_path}")
@@ -257,8 +228,6 @@ class Service:
         results = await asyncio.gather(*[read_and_save(p) for p in file_paths])
         files_stored = [p for p in results if p is not None]
 
-        # Save metadata — sandbox_id lets _try_reconnect_sandbox reconnect to
-        # this sandbox after a server restart instead of creating a new one.
         metadata = {
             "project_id": project_id,
             "sandbox_id": sandbox.sandbox_id,
@@ -271,30 +240,44 @@ class Service:
 
         print(f"Snapshotted {len(files_stored)} files for project {project_id} to disk")
 
-    async def _classify_prompt(self, prompt: str, api_key: str, builder_model: str) -> str:
-        """Classify whether the prompt is a build request or general chat."""
+    async def _classify_prompt(self, prompt: str, api_key: str, builder_model: str, project_id: str = "", is_first_message: bool = True) -> str:
+        """Classify whether the prompt is a build request or general chat.
+
+        On follow-ups, injects project context so error messages and code-related
+        feedback are correctly classified as 'build'.
+        """
         from langchain_core.messages import SystemMessage, HumanMessage
         from .prompts import GUARDRAIL_PROMPT
         from .agent import create_llm, get_fast_model
 
         try:
+            # Build context prefix for follow-up messages
+            context_prefix = ""
+            if not is_first_message and project_id:
+                context = load_json_store(project_id, "context.json")
+                files_count = len(context.get("files_created", [])) if context else 0
+                if files_count > 0:
+                    context_prefix = (
+                        f"[Active build session — {files_count} files created. "
+                        f"Treat error messages, bug reports, and change requests as \"build\".]\n"
+                    )
+
             fast_model = get_fast_model(builder_model)
             llm = create_llm(api_key, fast_model, max_tokens=16)
             messages = [
                 SystemMessage(content=GUARDRAIL_PROMPT),
-                HumanMessage(content=prompt),
+                HumanMessage(content=f"{context_prefix}{prompt}"),
             ]
             response = await llm.ainvoke(messages)
             classification = response.content.strip().lower()
             print(f"Prompt classification: '{classification}' for: {prompt[:80]}")
             return "build" if "build" in classification else "chat"
         except Exception as e:
-            # On classification failure, default to "build" so we never block real requests
             print(f"Classification failed, defaulting to build: {e}")
             return "build"
 
     async def _handle_chat_response(self, prompt: str, project_id: str, event_queue: asyncio.Queue, api_key: str, builder_model: str):
-        """Answer a non-build prompt conversationally instead of running the full pipeline."""
+        """Answer a non-build prompt conversationally."""
         from langchain_core.messages import SystemMessage, HumanMessage
         from .prompts import CHAT_RESPONSE_PROMPT
         from .agent import create_llm, get_fast_model
@@ -308,10 +291,8 @@ class Service:
         response = await llm.ainvoke(messages)
         answer = response.content.strip()
 
-        # Send the conversational response via SSE
         event_queue.put_nowait({"e": "chat_response", "message": answer})
 
-        # Store in DB
         async with AsyncSessionLocal() as db:
             msg = Message(
                 id=str(uuid.uuid4()),
@@ -323,7 +304,6 @@ class Service:
             db.add(msg)
             await db.commit()
 
-        # Signal completion (no URL since nothing was built)
         event_queue.put_nowait({
             "e": "completed",
             "url": None,
@@ -332,25 +312,46 @@ class Service:
         })
 
     async def run_agent_stream(self, prompt: str, id: str, event_queue: asyncio.Queue, openrouter_api_key: str = "", builder_model: str = "google/gemini-2.5-pro", is_first_message: bool = True):
-        """
-        Run the LangGraph multi-agent workflow
-        """
+        """Run the LangGraph multi-agent workflow."""
         try:
-            # Guardrail: classify prompt before creating sandbox or running workflow
-            classification = await self._classify_prompt(prompt, openrouter_api_key, builder_model)
-            if classification == "chat":
-                print(f"Prompt classified as chat, responding conversationally: {prompt[:80]}")
-                await self._handle_chat_response(prompt, id, event_queue, openrouter_api_key, builder_model)
-                return
+            # ── Smart parallel init ──
+            # Always run guardrail (even on follow-ups — user might ask a generic question mid-build).
+            # On first message: run guardrail + sandbox creation in parallel.
+            # On follow-ups: sandbox already exists, so guardrail is the only async call.
+            classification_task = asyncio.create_task(self._classify_prompt(prompt, openrouter_api_key, builder_model, project_id=id, is_first_message=is_first_message))
 
-            event_queue.put_nowait(
-                {
-                    "e": "started",
-                    "message": "Starting LangGraph multi-agent workflow",
-                }
-            )
+            if is_first_message:
+                # First message: start sandbox creation in parallel with guardrail
+                sandbox_task = asyncio.create_task(self.get_e2b_sandbox(id=id))
 
-            sandbox = await self.get_e2b_sandbox(id=id)
+                classification = await classification_task
+
+                if classification == "chat":
+                    sandbox_task.cancel()
+                    try:
+                        await sandbox_task
+                    except asyncio.CancelledError:
+                        print("Sandbox creation cancelled (chat query)")
+                    print(f"Prompt classified as chat: {prompt[:80]}")
+                    await self._handle_chat_response(prompt, id, event_queue, openrouter_api_key, builder_model)
+                    return
+
+                sandbox = await sandbox_task
+            else:
+                # Follow-up: sandbox likely exists already (fast reconnect)
+                classification = await classification_task
+
+                if classification == "chat":
+                    print(f"Follow-up classified as chat: {prompt[:80]}")
+                    await self._handle_chat_response(prompt, id, event_queue, openrouter_api_key, builder_model)
+                    return
+
+                sandbox = await self.get_e2b_sandbox(id=id)
+
+            event_queue.put_nowait({
+                "e": "started",
+                "message": "Starting LangGraph multi-agent workflow",
+            })
 
             initial_state = {
                 "project_id": id,
@@ -358,6 +359,7 @@ class Service:
                 "is_first_message": is_first_message,
                 "plan": None,
                 "files_created": [],
+                "scaffold_complete": False,
                 "build_passed": False,
                 "build_errors": "",
                 "fixer_retries": 0,
@@ -372,8 +374,7 @@ class Service:
             print(f"Starting LangGraph workflow with prompt: {prompt}")
             print(f"Project ID: {id}")
 
-            # Run the workflow — sandbox and event_queue travel via config, not state,
-            # so they never block LangGraph checkpointing.
+            workflow_start = time.time()
             final_state = await self.workflow.ainvoke(
                 initial_state,
                 config={
@@ -386,8 +387,7 @@ class Service:
             host = sandbox.get_host(port=5173)
             url = f"https://{host}"
 
-            # files_created accumulates across retries via operator.add;
-            # deduplicate while preserving first-seen order before sending.
+            # Deduplicate files
             all_files = final_state.get('files_created', [])
             unique_files = list(dict.fromkeys(all_files))
 
@@ -395,18 +395,7 @@ class Service:
             print(f"Workflow success: {final_state.get('success')}")
             print(f"Files created: {unique_files}")
 
-            # Save conversation history for future context, including the
-            # deduplicated file list so planner sees correct file count next session.
-            await self._save_conversation_history(
-                project_id=id,
-                user_prompt=prompt,
-                success=final_state.get('success', False),
-                files_created=unique_files,
-            )
-
-            # Snapshot files to local disk for persistence
-            await self.snapshot_project_files(project_id=id)
-
+            # ── Send completion event FIRST (user sees "ready" immediately) ──
             async with AsyncSessionLocal() as db:
                 completion_message = Message(
                     id=str(uuid.uuid4()),
@@ -425,19 +414,33 @@ class Service:
 
                 await db.commit()
 
+            # Build timing summary from execution_log
+            total_duration = round(time.time() - workflow_start, 2)
+            execution_log = final_state.get('execution_log', [])
+            node_timings = [
+                {"node": entry.get("node", "unknown"), "duration_s": entry.get("duration_s", 0), "status": entry.get("status", "unknown")}
+                for entry in execution_log
+                if "duration_s" in entry
+            ]
+
+            print(f"Total workflow duration: {total_duration}s")
+            print(f"Node timings: {node_timings}")
+
             event_queue.put_nowait({
                 "e": "completed",
                 "url": url,
                 "success": final_state.get('success'),
                 "files_created": unique_files,
+                "duration_s": total_duration,
+                "node_timings": node_timings,
             })
+
+            # ── Background: snapshot + save history (non-blocking) ──
+            asyncio.create_task(self._post_workflow_cleanup(id, prompt, final_state.get('success', False), unique_files))
 
         except Exception as e:
             print(f"Error during LangGraph workflow execution: {e}")
             print(f"Error type: {type(e)}")
-            print(f"Error details: {str(e)}")
-
-
             traceback.print_exc()
 
             try:
@@ -447,6 +450,19 @@ class Service:
                 })
             except Exception as queue_err:
                 print(f"Failed to send error to event queue: {queue_err}")
+
+    async def _post_workflow_cleanup(self, project_id: str, user_prompt: str, success: bool, files_created: list):
+        """Background task: snapshot files + save conversation history after completion."""
+        try:
+            await self._save_conversation_history(
+                project_id=project_id,
+                user_prompt=user_prompt,
+                success=success,
+                files_created=files_created,
+            )
+            await self.snapshot_project_files(project_id=project_id)
+        except Exception as e:
+            print(f"Post-workflow cleanup error: {e}")
 
 
 agent_service = Service()
