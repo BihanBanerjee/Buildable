@@ -266,6 +266,13 @@ def create_tools(
     if mode == "first_build":
         return [create_file, write_multiple_files]
 
+    elif mode == "first_build_fallback":
+        # Scaffold failed — builder needs everything to self-recover
+        return [
+            create_file, write_multiple_files, read_file,
+            execute_command, list_directory,
+        ]
+
     elif mode == "follow_up":
         return [
             read_file, edit_file, create_file,

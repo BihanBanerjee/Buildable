@@ -18,6 +18,7 @@ from ..tools import create_tools
 from ..prompts import (
     BUILDER_SYSTEM_FIRST,
     BUILDER_SYSTEM_FOLLOWUP,
+    BUILDER_SYSTEM_FALLBACK,
     get_builder_prompt,
 )
 from ..formatters import generate_build_summary
@@ -58,9 +59,9 @@ async def builder_node(state: GraphState, config: RunnableConfig) -> dict:
             tool_mode = "first_build"
             system_prompt = BUILDER_SYSTEM_FIRST
         elif is_first_message and not scaffold_ok:
-            tool_mode = "follow_up"
-            system_prompt = BUILDER_SYSTEM_FOLLOWUP
-            print("⚠ Scaffold failed — builder using full tool set for self-recovery")
+            tool_mode = "first_build_fallback"
+            system_prompt = BUILDER_SYSTEM_FALLBACK
+            print("⚠ Scaffold failed — builder using fallback mode for full self-recovery")
         else:
             tool_mode = "follow_up"
             system_prompt = BUILDER_SYSTEM_FOLLOWUP
