@@ -1,11 +1,12 @@
 """
 Node 6: APP START — deterministic (no LLM).
 
-Ensures the Vite dev server is running and serving HTTP 200.
+Ensures the Vite dev server is running, serving HTTP 200,
+and has no module-level or runtime errors.
 """
 
 import asyncio
-import traceback
+import re
 
 from langchain_core.runnables import RunnableConfig
 
@@ -13,8 +14,76 @@ from ..graph_state import GraphState
 from .helpers import safe_send_event, NodeTimer
 
 
+# Patterns that indicate errors in Vite page HTML or logs
+_ERROR_PATTERNS = [
+    r"vite-error-overlay",
+    r"Internal Server Error",
+    r"SyntaxError:",
+    r"ReferenceError:",
+    r"TypeError:",
+    r"Cannot find module",
+    r"Module not found",
+    r"Failed to resolve import",
+    r"does not provide an export named",
+    r"is not defined",
+    r"Uncaught",
+    r"pre-transform error",
+]
+_ERROR_RE = re.compile("|".join(_ERROR_PATTERNS), re.IGNORECASE)
+
+
+async def _check_runtime_errors(sandbox, path: str) -> list[str]:
+    """Fetch the Vite page and logs, looking for runtime/module errors.
+
+    Returns a list of error descriptions (empty = all clear).
+    """
+    errors: list[str] = []
+
+    # 1. Fetch the actual page body and look for error overlay / module errors
+    try:
+        body_result = await sandbox.commands.run(
+            "curl -s --max-time 10 http://localhost:5173",
+            cwd=path,
+            timeout=15,
+        )
+        body = body_result.stdout or ""
+        if _ERROR_RE.search(body):
+            # Extract a short snippet around the match for context
+            match = _ERROR_RE.search(body)
+            start = max(0, match.start() - 100)
+            end = min(len(body), match.end() + 200)
+            snippet = body[start:end].strip()
+            # Clean HTML tags for readability
+            snippet = re.sub(r"<[^>]+>", " ", snippet)
+            snippet = re.sub(r"\s+", " ", snippet).strip()
+            errors.append(f"Page contains error: {snippet[:300]}")
+            print(f"App start: Runtime error detected in page HTML")
+    except Exception as e:
+        print(f"App start: Failed to fetch page body: {e}")
+
+    # 2. Check Vite logs for errors
+    try:
+        log_result = await sandbox.commands.run(
+            "tail -50 /tmp/vite.log 2>/dev/null || true",
+            cwd=path,
+            timeout=10,
+        )
+        log_text = log_result.stdout or ""
+        if log_text:
+            for line in log_text.splitlines():
+                if _ERROR_RE.search(line):
+                    clean_line = line.strip()[:200]
+                    errors.append(f"Vite log error: {clean_line}")
+                    print(f"App start: Error in Vite log: {clean_line}")
+                    break  # One error from logs is enough context
+    except Exception as e:
+        print(f"App start: Failed to read Vite logs: {e}")
+
+    return errors
+
+
 async def app_start_node(state: GraphState, config: RunnableConfig) -> dict:
-    """Ensure the Vite dev server is running and serving."""
+    """Ensure the Vite dev server is running, serving, and error-free."""
     timer = NodeTimer("app_start")
     configurable = config.get("configurable", {})
     event_queue = configurable.get("event_queue")
@@ -78,6 +147,13 @@ async def app_start_node(state: GraphState, config: RunnableConfig) -> dict:
                 print(f"App start: Vite returned HTTP {http_code}")
                 runtime_errors.append(f"Vite dev server returned HTTP {http_code}")
 
+            # ── Runtime error detection ──
+            # Wait briefly for React to mount, then check for errors
+            if not runtime_errors:
+                await asyncio.sleep(2)
+                page_errors = await _check_runtime_errors(sandbox, path)
+                runtime_errors.extend(page_errors)
+
         success = len(runtime_errors) == 0
         safe_send_event(event_queue, {
             "e": "app_check_complete",
@@ -85,13 +161,19 @@ async def app_start_node(state: GraphState, config: RunnableConfig) -> dict:
             "message": "App is ready" if success else f"App check found {len(runtime_errors)} issues",
         })
 
+        error_str = "; ".join(runtime_errors) if runtime_errors else None
+
         log_entry = timer.stop(errors=runtime_errors)
-        return {
+        result = {
             "success": success,
             "current_node": "app_start",
-            "error_message": "; ".join(runtime_errors) if runtime_errors else None,
+            "error_message": error_str,
             "execution_log": [log_entry],
         }
+        # Put runtime errors into build_errors so the fixer can read them
+        if error_str:
+            result["build_errors"] = error_str
+        return result
 
     except Exception as e:
         error_msg = f"App start error: {str(e)}"

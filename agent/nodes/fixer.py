@@ -42,7 +42,10 @@ async def fixer_node(state: GraphState, config: RunnableConfig) -> dict:
         api_key = configurable.get("openrouter_api_key")
         fast_model = "google/gemini-2.5-flash"
 
-        print(f"Fixer node: attempt {fixer_retries + 1}, fixing errors:\n{build_errors[:300]}")
+        # Determine error type: if build passed but we're in fixer, it's a runtime error
+        build_passed = state.get("build_passed", False)
+        error_type = "runtime" if build_passed else "build"
+        print(f"Fixer node: attempt {fixer_retries + 1} ({error_type} error), fixing:\n{build_errors[:300]}")
 
         tools = create_tools(sandbox, event_queue, project_id, mode="fixer")
         fixer_llm = create_llm(api_key, fast_model, max_tokens=4000)
@@ -53,7 +56,7 @@ async def fixer_node(state: GraphState, config: RunnableConfig) -> dict:
             prompt=SystemMessage(content=FIXER_PROMPT),
         )
 
-        user_message = get_fixer_prompt(build_errors, plan=plan)
+        user_message = get_fixer_prompt(build_errors, plan=plan, error_type=error_type)
         messages = [HumanMessage(content=user_message)]
 
         try:

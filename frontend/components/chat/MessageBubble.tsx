@@ -16,6 +16,7 @@ interface Message {
   formatted?: string;
   event_type?: string;
   isCompleted?: boolean;
+  isProgress?: boolean;
   summary?: string;
   buildDuration?: number;
   tool_calls?: ToolCall[];
@@ -219,7 +220,15 @@ export function MessageBubble({ message, isLastMessage }: MessageBubbleProps) {
       <div className="max-w-2xl w-full bg-card border border-border rounded-lg p-4">
         {cleanContent && (
           <div className="text-sm text-foreground/80 mb-3 leading-relaxed">
-            {renderMarkdown(cleanContent)}
+            {message.isProgress && isLastMessage ? (
+              <div className="flex items-center gap-2">
+                <Loader2 size={13} className="animate-spin text-primary shrink-0" />
+                <span>{cleanContent}</span>
+                <ElapsedTimer />
+              </div>
+            ) : (
+              renderMarkdown(cleanContent)
+            )}
           </div>
         )}
 

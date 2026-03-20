@@ -100,6 +100,10 @@ async def _progress_ticker(event_queue: asyncio.Queue, stop_event: asyncio.Event
         "Building pages...",
         "Creating utilities...",
         "Assembling application...",
+        "Optimizing layout...",
+        "Adding interactivity...",
+        "Wiring up state...",
+        "Polishing details...",
         "Finalizing code...",
     ]
     tick = 0
@@ -107,7 +111,7 @@ async def _progress_ticker(event_queue: asyncio.Queue, stop_event: asyncio.Event
         await asyncio.sleep(8)
         if stop_event.is_set():
             break
-        msg_index = min(tick, len(progress_messages) - 1)
+        msg_index = tick % len(progress_messages)
         safe_send_event(event_queue, {"e": "progress", "message": progress_messages[msg_index]})
         tick += 1
 

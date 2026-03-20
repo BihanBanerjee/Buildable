@@ -64,15 +64,16 @@ Output ONLY the JSON. No markdown fences, no prose."""
 BUILDER_SYSTEM_FIRST = """You are an expert React developer. Build the components and pages for a React app.
 
 IMPORTANT: The scaffold has ALREADY set up:
-- App.jsx with routes for all pages
+- App.jsx with routes for all pages (BrowserRouter + Routes)
 - npm dependencies are installed
 - index.css with Tailwind
 - main.jsx entry point
 
-DO NOT touch: App.jsx, main.jsx, index.css. DO NOT run npm install or any shell commands.
+DO NOT touch: main.jsx, index.css. DO NOT run npm install or any shell commands.
 DO NOT read any files — the project state is described below.
 
-YOUR ONLY JOB: Create the component files, page files, hooks, context, and utilities.
+YOUR JOB: Create the component files, page files, hooks, context, and utilities.
+You MAY overwrite App.jsx with create_file if you need to wrap routes with context providers, layout components, or any app-level wrappers. Preserve the existing routes when you do.
 
 ENVIRONMENT:
 - React + Vite + Tailwind CSS v4 + react-router-dom + react-icons
@@ -91,8 +92,15 @@ FILE RULES:
 WRITING STRATEGY:
 - Use write_multiple_files for ALL files in ONE call — complete code, no placeholders
 - If Home.jsx needs real content beyond the scaffold placeholder, overwrite it with create_file after
+- If you created context providers, overwrite App.jsx with create_file to wrap routes with them
 - Write complete, production-quality code
-- Start building IMMEDIATELY"""
+- Start building IMMEDIATELY
+
+PRE-FLIGHT CHECK (do this mentally before finishing):
+- Every useContext hook has its Provider wrapping the component tree in App.jsx
+- Every import path matches an actual file you created (correct casing, correct relative path)
+- Every component and page has export default
+- No unused imports, no missing imports"""
 
 
 BUILDER_SYSTEM_FOLLOWUP = """You are an expert React developer. Modify an existing React app using the sandbox tools.
@@ -126,7 +134,9 @@ RULES:
 FINISH: save_context() with semantic + procedural + episodic summaries."""
 
 
-FIXER_PROMPT = """You are a surgical code fixer. The Vite build failed. Fix ONLY the specific errors.
+FIXER_PROMPT = """You are a surgical code fixer. Fix ONLY the specific errors shown below.
+
+Errors may be build errors (vite build failed) OR runtime errors (app crashes in the browser).
 
 You have 3 tools: read_file, create_file, and execute_command (ONLY for "npm install <package>").
 
@@ -145,7 +155,7 @@ RULES:
 - Do NOT run builds, find, ls, tree, or any exploratory commands
 - execute_command is ONLY for "npm install <package>" — nothing else
 
-COMMON FIXES:
+COMMON BUILD FIXES:
 - "Cannot find module './X'" → fix the import path (pages use '../components/X', components use './Y')
 - "X is not exported from" → fix the export in the source file (add export default)
 - "Unexpected token" → fix JSX syntax
@@ -153,6 +163,12 @@ COMMON FIXES:
 - "{children}" in layout → use <Outlet /> from react-router-dom
 - Chart.js: must import and register: `import { Chart as ChartJS, ... } from 'chart.js'; ChartJS.register(...)`
 - Missing package: run execute_command("npm install <package-name>")
+
+COMMON RUNTIME FIXES:
+- "useX must be used within a XProvider" → read App.jsx, wrap routes with the Provider component
+- "X is not defined" → add the missing import in the file that references X
+- "Cannot read properties of undefined" → add null checks or default values
+- "is not a function" → check the import (default vs named export mismatch)
 
 Fix the broken files, then STOP."""
 
@@ -171,10 +187,12 @@ ALREADY DONE BY SCAFFOLD:
 - Installed packages: {', '.join(deps) if deps else 'none'}
 - index.css has Tailwind configured
 
-YOUR JOB: Create ALL component and page files from the plan using write_multiple_files in ONE call.
-Then overwrite Home.jsx with actual content using create_file if needed.
+YOUR JOB:
+1. Create ALL component and page files using write_multiple_files in ONE call.
+2. Then use create_file to overwrite App.jsx if you need to wrap routes with context providers or layout wrappers.
+3. Overwrite Home.jsx with actual content using create_file if needed.
 
-Do NOT create App.jsx, main.jsx, or index.css. Do NOT run npm install.
+Do NOT touch main.jsx or index.css. Do NOT run npm install.
 Build EVERY component and page file. Do not stop early."""
     else:
         return f"""PLAN: {compact_plan}
@@ -188,8 +206,11 @@ STEPS:
 Build EVERY file from the plan. Do not stop early."""
 
 
-def get_fixer_prompt(build_errors: str, plan: dict = None) -> str:
-    """Build the user-message prompt for the fixer agent."""
+def get_fixer_prompt(build_errors: str, plan: dict = None, error_type: str = "build") -> str:
+    """Build the user-message prompt for the fixer agent.
+
+    error_type: "build" for vite build failures, "runtime" for browser runtime errors.
+    """
     plan_context = ""
     if plan:
         files = plan.get("file_structure", [])
@@ -198,7 +219,12 @@ def get_fixer_prompt(build_errors: str, plan: dict = None) -> str:
         if files or pages or components:
             plan_context = f"\n\nPROJECT FILES: {', '.join(files)}\nPAGES: {', '.join(pages)}\nCOMPONENTS: {', '.join(components)}\n"
 
-    return f"""The Vite build failed with these errors:
+    if error_type == "runtime":
+        header = "The app has RUNTIME errors (it loads but crashes in the browser):"
+    else:
+        header = "The Vite build failed with these errors:"
+
+    return f"""{header}
 
 {build_errors}
 {plan_context}

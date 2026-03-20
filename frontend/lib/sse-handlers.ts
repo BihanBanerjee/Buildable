@@ -59,6 +59,7 @@ export function handleSSEMessage(event: MessageEvent, handlers: SSEHandlers) {
             ...prev.slice(0, -1),
             {
               ...lastMsg,
+              isProgress: false,
               tool_calls: [
                 ...(lastMsg.tool_calls || []),
                 { name: toolName, status: "running" as const, detail, input },
@@ -261,7 +262,7 @@ export function handleSSEMessage(event: MessageEvent, handlers: SSEHandlers) {
         if (lastMsg?.role === "assistant") {
           return [
             ...prev.slice(0, -1),
-            { ...lastMsg, content: progressText },
+            { ...lastMsg, content: progressText, isProgress: true },
           ];
         }
         return prev;
