@@ -127,14 +127,43 @@ export function handleSSEMessage(event: MessageEvent, handlers: SSEHandlers) {
       handlers.setIsBuilding(true);
     }
 
+    // Track build stage for the progress stepper
+    if (data.e === "enhancer_started") handlers.setBuildStage("enhancer");
+    if (data.e === "planner_started") handlers.setBuildStage("planner");
+    if (data.e === "builder_started") handlers.setBuildStage("builder");
+    if (data.e === "code_validator_started") handlers.setBuildStage("validator");
+    if (data.e === "app_check_started") handlers.setBuildStage("app_check");
+
     if (data.url) {
       handlers.setIsBuilding(false);
       handlers.pollUrlUntilReady(data.url);
     }
 
+    if (data.e === "cancelled") {
+      handlers.setIsBuilding(false);
+      handlers.setCurrentTool(null);
+      handlers.setBuildStage(null);
+      handlers.setMessages((prev) => {
+        return prev.map((msg, idx) => {
+          if (msg.role === "assistant" && msg.tool_calls) {
+            const resolvedCalls = msg.tool_calls.map((t) =>
+              t.status === "running" ? { ...t, status: "success" as const } : t,
+            );
+            return { ...msg, tool_calls: resolvedCalls };
+          }
+          if (idx === prev.length - 1 && msg.role === "assistant") {
+            return { ...msg, content: msg.content || "Build cancelled." };
+          }
+          return msg;
+        });
+      });
+      return;
+    }
+
     if (data.e === "completed" || data.e === "workflow_completed") {
       handlers.setIsBuilding(false);
       handlers.setCurrentTool(null);
+      handlers.setBuildStage("completed");
 
       // Mark last message as completed AND force-resolve any stuck tool_calls
       handlers.setMessages((prev) => {

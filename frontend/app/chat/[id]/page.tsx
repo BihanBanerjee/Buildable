@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { Loader2 } from "lucide-react";
 import { API_URL } from "@/lib/utils";
@@ -11,9 +11,10 @@ import {
   PreviewPanel,
   ChatInput,
 } from "@/components/chat";
+import { BuildProgress } from "@/components/chat/BuildProgress";
 import { consolidateMessages } from "@/lib/chat-utils";
 import { handleSSEMessage } from "@/lib/sse-handlers";
-import type { Message, ActiveToolCall } from "@/lib/chat-types";
+import type { Message, ActiveToolCall, BuildStage } from "@/lib/chat-types";
 
 export default function ChatIdPage() {
   const params = useParams();
@@ -37,6 +38,7 @@ export default function ChatIdPage() {
   const [sandboxActive, setSandboxActive] = useState(true);
   const [isRestartingSandbox, setIsRestartingSandbox] = useState(false);
   const [isSending, setIsSending] = useState(false);
+  const [buildStage, setBuildStage] = useState<BuildStage | null>(null);
 
   const eventSourceRef = useRef<EventSource | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -213,6 +215,7 @@ export default function ChatIdPage() {
             setCurrentTool,
             setIsBuilding,
             setIsSending,
+            setBuildStage,
             pollUrlUntilReady,
             setMessages,
             setAppUrl,
@@ -237,6 +240,22 @@ export default function ChatIdPage() {
         eventSourceRef.current = null;
       }
     };
+  }, [chatId]);
+
+  // Clear progress stepper after completion with a short delay
+  useEffect(() => {
+    if (buildStage === "completed") {
+      const t = setTimeout(() => setBuildStage(null), 2000);
+      return () => clearTimeout(t);
+    }
+  }, [buildStage]);
+
+  const handleStopBuild = useCallback(async () => {
+    try {
+      await apiClient.post(`/chats/${chatId}/cancel`);
+    } catch (err) {
+      console.error("Failed to cancel build:", err);
+    }
   }, [chatId]);
 
   const handleSendMessage = async (e: React.FormEvent) => {
@@ -342,12 +361,14 @@ export default function ChatIdPage() {
               <div ref={messagesEndRef} />
             </div>
 
+            <BuildProgress currentStage={buildStage} />
             <ChatInput
               input={input}
               wsConnected={sseConnected}
               isBuilding={isBuilding || isSending}
               onInputChange={setInput}
               onSubmit={handleSendMessage}
+              onStop={handleStopBuild}
             />
           </div>
 

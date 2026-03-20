@@ -455,6 +455,34 @@ async def delete_project(
     return {"status": "deleted", "project_id": id}
 
 
+@app.post("/chats/{id}/cancel")
+async def cancel_build(
+    id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Cancel an active build for a project."""
+    result = await db.execute(select(Chat).where(Chat.id == id))
+    chat = result.scalar_one_or_none()
+    if not chat or chat.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    task = active_runs.pop(id, None)
+    if task and not task.done():
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+    # Send a cancelled event so the frontend knows
+    event_queue = active_streams.get(id)
+    if event_queue:
+        await event_queue.put({"e": "cancelled", "message": "Build cancelled by user"})
+
+    return {"status": "cancelled"}
+
+
 @app.get("/projects", response_model=ProjectsListResponse)
 async def list_user_projects(
     current_user: User = Depends(get_current_user),

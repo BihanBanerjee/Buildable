@@ -1,6 +1,6 @@
 import { useRef, useEffect, useCallback } from "react";
 import { Button } from "@/components/ui/button";
-import { ArrowUp } from "lucide-react";
+import { ArrowUp, Square } from "lucide-react";
 
 interface ChatInputProps {
   input: string;
@@ -8,6 +8,7 @@ interface ChatInputProps {
   isBuilding: boolean;
   onInputChange: (value: string) => void;
   onSubmit: (e: React.FormEvent) => void;
+  onStop?: () => void;
 }
 
 export function ChatInput({
@@ -16,6 +17,7 @@ export function ChatInput({
   isBuilding,
   onInputChange,
   onSubmit,
+  onStop,
 }: ChatInputProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -54,14 +56,27 @@ export function ChatInput({
               className="flex-1 resize-none border-0 bg-transparent text-foreground placeholder:text-muted-foreground focus:outline-none text-sm py-1"
               disabled={!wsConnected || isBuilding}
             />
-            <Button
-              type="submit"
-              disabled={!wsConnected || !input.trim() || isBuilding}
-              size="icon"
-              className="rounded-lg w-8 h-8 shrink-0"
-            >
-              <ArrowUp size={16} />
-            </Button>
+            {isBuilding && onStop ? (
+              <Button
+                type="button"
+                onClick={onStop}
+                size="icon"
+                variant="destructive"
+                className="rounded-lg w-8 h-8 shrink-0"
+                title="Stop build"
+              >
+                <Square size={14} fill="currentColor" />
+              </Button>
+            ) : (
+              <Button
+                type="submit"
+                disabled={!wsConnected || !input.trim() || isBuilding}
+                size="icon"
+                className="rounded-lg w-8 h-8 shrink-0"
+              >
+                <ArrowUp size={16} />
+              </Button>
+            )}
           </div>
         </div>
       </form>

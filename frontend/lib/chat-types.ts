@@ -37,10 +37,19 @@ export interface SSEMessage {
   [key: string]: unknown;
 }
 
+export type BuildStage =
+  | "enhancer"
+  | "planner"
+  | "builder"
+  | "validator"
+  | "app_check"
+  | "completed";
+
 export interface SSEHandlers {
   setCurrentTool: (tool: ActiveToolCall | null) => void;
   setIsBuilding: (isBuilding: boolean) => void;
   setIsSending: (isSending: boolean) => void;
+  setBuildStage: (stage: BuildStage | null) => void;
   pollUrlUntilReady: (url: string) => void;
   setMessages: React.Dispatch<React.SetStateAction<Message[]>>;
   setAppUrl: (url: string | null) => void;
