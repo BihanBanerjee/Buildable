@@ -78,21 +78,6 @@ export default function App() {{
 """
 
 
-def _generate_home_jsx(plan: dict) -> str:
-    """Generate a minimal Home.jsx placeholder that the builder will flesh out."""
-    overview = plan.get("overview", "Welcome to the app")
-    return f"""import React from 'react'
-
-export default function Home() {{
-  return (
-    <div className="min-h-screen bg-gray-50 p-8">
-      <h1 className="text-3xl font-bold text-gray-900 mb-4">Welcome</h1>
-      <p className="text-gray-600">{overview}</p>
-    </div>
-  )
-}}
-"""
-
 
 # ─────────────────────────────────────────────────────────────
 # Follow-up scaffold: detect & register new pages
@@ -252,26 +237,35 @@ async def scaffold_node(state: GraphState, config: RunnableConfig) -> dict:
                 "tool_output": f"npm install {dep_str}: {'ok' if install_ok else 'failed'}",
             })
 
-        # Step 2: Generate and write App.jsx
-        app_jsx_content = _generate_app_jsx(pages, components)
+        # Step 2: If plan has only 1 page, make it the root route directly (no Home.jsx)
+        # If multiple pages, keep Home as landing page
+        if len(pages) == 1 and pages[0] != "Home":
+            # Single page app: that page IS the home page at /
+            effective_pages = pages
+        else:
+            # Multi-page: ensure Home is the first page (landing)
+            if "Home" not in pages:
+                effective_pages = ["Home"] + pages
+            else:
+                effective_pages = pages
+
+        # Step 3: Generate and write App.jsx
+        app_jsx_content = _generate_app_jsx(effective_pages, components)
         await sandbox.files.write(f"{path}/src/App.jsx", app_jsx_content)
         files_created.append("src/App.jsx")
         safe_send_event(event_queue, {"e": "file_created", "message": "Created src/App.jsx"})
 
-        # Step 3: Generate and write index.css
+        # Step 4: Generate and write index.css
         index_css = '@import "tailwindcss";\n'
         await sandbox.files.write(f"{path}/src/index.css", index_css)
         files_created.append("src/index.css")
 
-        # Step 4: Generate placeholder Home.jsx
-        home_jsx = _generate_home_jsx(plan)
-        await sandbox.files.write(f"{path}/src/pages/Home.jsx", home_jsx)
-        files_created.append("src/pages/Home.jsx")
-
-        # Step 5: Create empty page files for non-Home pages so imports don't break
-        for page in pages:
-            if page != "Home" and page != "home":
-                page_content = f"""import React from 'react'
+        # Step 5: Create placeholder page stubs so imports don't break
+        for page in effective_pages:
+            if page == "Home" and len(pages) == 1 and pages[0] != "Home":
+                # Skip Home — the single page IS the home
+                continue
+            page_content = f"""import React from 'react'
 
 export default function {page}() {{
   return (
@@ -281,8 +275,8 @@ export default function {page}() {{
   )
 }}
 """
-                await sandbox.files.write(f"{path}/src/pages/{page}.jsx", page_content)
-                files_created.append(f"src/pages/{page}.jsx")
+            await sandbox.files.write(f"{path}/src/pages/{page}.jsx", page_content)
+            files_created.append(f"src/pages/{page}.jsx")
 
         print(f"Scaffold complete: {len(files_created)} files, {len(dependencies)} deps")
 
