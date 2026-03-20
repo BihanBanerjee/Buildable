@@ -1,8 +1,10 @@
 """
-LangGraph workflow builder for the 6-node orchestration.
+LangGraph workflow builder for the orchestration.
 
-Pipeline: planner → scaffold → builder → build_checkpoint ⇄ fixer → app_start ⇄ fixer → END
+First build:  planner → scaffold → builder → build_checkpoint ⇄ fixer → app_start ⇄ fixer → END
+Follow-up:    builder → build_checkpoint ⇄ fixer → app_start ⇄ fixer → END
 
+- router: Routes to planner (first build) or directly to builder (follow-up)
 - planner: Fast model generates the plan (structured output)
 - scaffold: Deterministic — installs deps, generates App.jsx with routes, zero LLM
 - builder: Expensive model creates component/page files via ReAct agent
@@ -21,6 +23,14 @@ from .nodes import (
     fixer_node,
     app_start_node,
 )
+
+
+def route_entry(state: GraphState) -> str:
+    """Route entry: first build goes through planner, follow-ups skip to builder."""
+    if state.get("is_first_message", True):
+        return "planner"
+    print("Follow-up — skipping planner/scaffold, going straight to builder")
+    return "builder"
 
 
 def should_fix_or_start(state: GraphState) -> str:
@@ -60,16 +70,21 @@ def should_end_or_fix_runtime(state: GraphState) -> str:
 
 
 def create_langgraph_workflow():
-    """Build the 6-node LangGraph state machine.
+    """Build the LangGraph state machine.
 
-    planner → scaffold → builder → build_checkpoint ─── (pass) ───→ app_start ─── (ok) ───→ END
-                                          ↑                  │           │
-                                          │            (fail, retries)   │ (runtime errors, retries left)
-                                          │                  │           │
-                                          └── fixer ◄────────┘───────────┘
+    First build:
+      planner → scaffold → builder → build_checkpoint ─── (pass) ───→ app_start ─── (ok) ───→ END
+                                            ↑                  │           │
+                                            └── fixer ◄────────┘───────────┘
+
+    Follow-up:
+      builder → build_checkpoint ─── (pass) ───→ app_start ─── (ok) ───→ END
+                      ↑                  │           │
+                      └── fixer ◄────────┘───────────┘
     """
     workflow = StateGraph(GraphState)
 
+    workflow.add_node("router", lambda state: state)  # passthrough, routing handled by conditional edges
     workflow.add_node("planner", planner_node)
     workflow.add_node("scaffold", scaffold_node)
     workflow.add_node("builder", builder_node)
@@ -77,10 +92,19 @@ def create_langgraph_workflow():
     workflow.add_node("fixer", fixer_node)
     workflow.add_node("app_start", app_start_node)
 
-    # Linear: planner → scaffold → builder → build_checkpoint
-    workflow.set_entry_point("planner")
+    # Entry: router decides first-build vs follow-up
+    workflow.set_entry_point("router")
+    workflow.add_conditional_edges(
+        "router",
+        route_entry,
+        {"planner": "planner", "builder": "builder"},
+    )
+
+    # First-build path: planner → scaffold → builder
     workflow.add_edge("planner", "scaffold")
     workflow.add_edge("scaffold", "builder")
+
+    # Common path: builder → build_checkpoint
     workflow.add_edge("builder", "build_checkpoint")
 
     # Conditional: build_checkpoint → fixer or app_start

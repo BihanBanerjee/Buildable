@@ -47,10 +47,15 @@ async def builder_node(state: GraphState, config: RunnableConfig) -> dict:
         scaffold_ok = state.get("scaffold_complete", False)
         plan = state.get("plan", {})
         project_id = state.get("project_id", "")
+        user_prompt = state.get("user_prompt", "")
         api_key = configurable.get("openrouter_api_key")
         builder_model = state.get("builder_model", "google/gemini-2.5-pro")
 
         files_tracker: list = []
+
+        # On follow-ups, emit builder_started (scaffold used to do this)
+        if not is_first_message:
+            safe_send_event(event_queue, {"e": "builder_started", "message": "Generating code for your application..."})
 
         # ── Graceful degradation ──
         # If scaffold succeeded on a first build → narrow tool set (create only).
@@ -80,7 +85,11 @@ async def builder_node(state: GraphState, config: RunnableConfig) -> dict:
             prompt=SystemMessage(content=system_prompt),
         )
 
-        user_message = get_builder_prompt(plan, is_first_message and scaffold_ok)
+        # For follow-ups: pass the raw user prompt (no plan available)
+        if not is_first_message:
+            user_message = get_builder_prompt({"_user_prompt": user_prompt}, False)
+        else:
+            user_message = get_builder_prompt(plan, scaffold_ok)
         messages = [HumanMessage(content=user_message)]
 
         try:

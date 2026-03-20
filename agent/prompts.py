@@ -258,7 +258,8 @@ YOUR JOB:
 Do NOT touch main.jsx or index.css. Do NOT run npm install.
 Build EVERY component and page file. Do not stop early."""
     else:
-        return f"""USER REQUEST + PLAN: {compact_plan}
+        user_prompt = plan.get("_user_prompt", "") if plan else ""
+        return f"""USER REQUEST: {user_prompt or compact_plan}
 
 STEPS:
 1. get_context() — understand what was built before
@@ -266,7 +267,8 @@ STEPS:
 3. read ONLY the files that need to change
 4. Use edit_file for surgical modifications to existing files
 5. Use create_file ONLY for genuinely new files
-6. save_context() with what you changed
+6. If adding a new page, also edit App.jsx to add the route
+7. save_context() with what you changed
 
 REMEMBER: The app is working. Make ONLY the changes the user asked for. Do NOT rewrite existing files."""
 
