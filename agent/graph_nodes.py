@@ -396,8 +396,9 @@ async def fixer_node(state: GraphState, config: RunnableConfig) -> dict:
         build_errors = state.get("build_errors", "Unknown error")
         project_id = state.get("project_id", "")
         api_key = configurable.get("openrouter_api_key")
-        builder_model = state.get("builder_model", "google/gemini-2.5-pro")
-        fast_model = get_fast_model(builder_model)
+        # Always use Gemini Flash for fixer — fast, cheap, follows instructions literally.
+        # Sonnet ignores fixer constraints and reads every file; Flash does surgical fixes.
+        fast_model = "google/gemini-2.5-flash"
 
         print(f"Fixer node: attempt {fixer_retries + 1}, fixing errors:\n{build_errors[:300]}")
 
