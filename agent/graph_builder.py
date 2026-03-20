@@ -1,52 +1,60 @@
 from langgraph.graph import StateGraph, END
 from .graph_state import GraphState
 from .graph_nodes import (
-    enhancer_node,
-    planner_node,
-    builder_node,
-    code_validator_node,
-    application_checker_node,
-    should_retry_builder_for_validation,
-    should_retry_builder_or_finish,
+    planner_builder_node,
+    build_checkpoint_node,
+    fixer_node,
+    app_start_node,
 )
 
 
-def create_langgraph_workflow():
-    """Returns the LangGraph workflow for the multi-agent system"""
+def should_fix_or_start(state: GraphState) -> str:
+    """Route after build checkpoint: fix errors or start app."""
+    if state.get("build_passed", False):
+        print("Build checkpoint PASSED — skipping fixer, starting app")
+        return "app_start"
 
-    # Create the state graph
+    retries = state.get("fixer_retries", 0)
+    max_retries = state.get("max_fixer_retries", 2)
+
+    if retries < max_retries:
+        print(f"Build checkpoint FAILED — sending to fixer (attempt {retries + 1}/{max_retries})")
+        return "fixer"
+    else:
+        print(f"Fixer exhausted ({retries}/{max_retries} retries) — starting app anyway")
+        return "app_start"
+
+
+def create_langgraph_workflow():
+    """Build the 2-agent + deterministic checkpoint graph.
+
+    planner_builder → build_checkpoint ─── (pass) ───→ app_start → END
+                            ↑               │
+                            │          (fail, retries left)
+                            │               │
+                            └── fixer ◄─────┘
+    """
     workflow = StateGraph(GraphState)
 
-    # Add nodes
-    workflow.add_node("enhancer", enhancer_node)
-    workflow.add_node("planner", planner_node)
-    workflow.add_node("builder", builder_node)
-    workflow.add_node("code_validator", code_validator_node)
-    workflow.add_node("application_checker", application_checker_node)
+    workflow.add_node("planner_builder", planner_builder_node)
+    workflow.add_node("build_checkpoint", build_checkpoint_node)
+    workflow.add_node("fixer", fixer_node)
+    workflow.add_node("app_start", app_start_node)
 
-    # Set entry point
-    workflow.set_entry_point("enhancer")
+    workflow.set_entry_point("planner_builder")
+    workflow.add_edge("planner_builder", "build_checkpoint")
 
-    # Add edges with retry logic
-    workflow.add_edge("enhancer", "planner")
-    workflow.add_edge("planner", "builder")
-    workflow.add_edge("builder", "code_validator")
-
-    # Code validator can retry builder or continue to app checker
     workflow.add_conditional_edges(
-        "code_validator",
-        should_retry_builder_for_validation,
-        {"builder": "builder", "application_checker": "application_checker"},
+        "build_checkpoint",
+        should_fix_or_start,
+        {"fixer": "fixer", "app_start": "app_start"},
     )
 
-    # Application checker can retry builder or finish
-    workflow.add_conditional_edges(
-        "application_checker",
-        should_retry_builder_or_finish,
-        {"builder": "builder", "end": END},
-    )
+    # After fixer patches files, re-run the build checkpoint
+    workflow.add_edge("fixer", "build_checkpoint")
 
-    # Compile the workflow
+    workflow.add_edge("app_start", END)
+
     return workflow.compile()
 
 

@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field
 import asyncio
 from typing import List
 from .graph_state import GraphState
-from .tools import create_tools_with_context
+from .tools import create_tools, check_missing_packages_standalone
 from .agent import create_llm, get_fast_model
 from .formatters import (
     create_formatted_message,
@@ -14,7 +14,14 @@ from .formatters import (
 )
 import json
 from langgraph.prebuilt import create_react_agent
-from .prompts import INITPROMPT_FIRST, INITPROMPT_FOLLOWUP, VALIDATOR_PROMPT, ENHANCER_PLANNER_PROMPT, get_builder_error_prompt, get_builder_prompt
+from .prompts import (
+    ENHANCER_PLANNER_PROMPT,
+    BUILDER_SYSTEM_FIRST,
+    BUILDER_SYSTEM_FOLLOWUP,
+    FIXER_PROMPT,
+    get_builder_prompt,
+    get_fixer_prompt,
+)
 from utils.store import load_json_store
 import traceback
 from db.base import AsyncSessionLocal
@@ -68,13 +75,12 @@ async def _stream_agent_events(
 ) -> None:
     """Stream agent events to the SSE queue.
 
-    Tool calls are collected in-memory and flushed as a single DB row at the end,
-    instead of 20-30 individual INSERT per build.  Real-time SSE events are still
-    sent for every tool_start / tool_end so the frontend sees live progress.
+    Tool calls are collected in-memory and flushed as a single DB row at the end.
+    Real-time SSE events are still sent for every tool_start / tool_end.
     """
 
-    thinking_sent = False  # Only send one thinking event per agent execution
-    tool_log: list[dict] = []  # Collect tool calls for single batch DB write
+    thinking_sent = False
+    tool_log: list[dict] = []
 
     async for event in agent_executor.astream_events(
         {"messages": messages}, version="v2", config=config
@@ -98,7 +104,6 @@ async def _stream_agent_events(
                     content = str(content)
 
                 if content:
-                    # Only send the first thinking event to avoid flooding the SSE stream
                     if not thinking_sent:
                         safe_send_event(event_queue, {"e": "thinking", "message": content})
                         thinking_sent = True
@@ -127,10 +132,9 @@ async def _stream_agent_events(
                 "tool_output": tool_output,
             })
 
-            # Collect for batch DB write (compact: name + truncated output)
             tool_log.append({"name": tool_name, "status": "success", "output": tool_output[:150]})
 
-    # Flush all tool calls as ONE DB row instead of N individual writes
+    # Flush all tool calls as ONE DB row
     if tool_log:
         await store_message(
             chat_id=project_id,
@@ -141,49 +145,42 @@ async def _stream_agent_events(
         )
 
 
+# ─────────────────────────────────────────────────────────────
+# Node 1: PLANNER-BUILDER (replaces enhancer + planner + builder)
+# ─────────────────────────────────────────────────────────────
 
-async def enhancer_node(state: GraphState, config: RunnableConfig) -> dict:
-    """
-    Enhancer node: Now a lightweight pass-through. Enhancement is merged into planner_node
-    to save one LLM round-trip. This node just forwards the prompt and emits SSE events.
-    """
-    configurable = config.get("configurable", {})
-    event_queue = configurable.get("event_queue")
-    user_prompt = state.get("user_prompt", "")
+async def planner_builder_node(state: GraphState, config: RunnableConfig) -> dict:
+    """Combined planner + builder node.
 
-    if event_queue:
-        safe_send_event(event_queue, {
-            "e": "enhancer_started",
-            "message": "Understanding your idea...",
-        })
-
-    print(f"Enhancer node: passing prompt to planner: {user_prompt[:80]}")
-    return {"enhanced_prompt": user_prompt}
-
-
-async def planner_node(state: GraphState, config: RunnableConfig) -> dict:
-    """
-    Planner node: Analyzes user prompt and generates comprehensive implementation plan
+    1. Emits enhancer_started / planner_started SSE events
+    2. Generates plan via structured output (fast model)
+    3. Emits planner_complete + description
+    4. Runs builder ReAct agent (expensive model)
+    5. Emits builder_complete + summary
     """
     configurable = config.get("configurable", {})
     event_queue = configurable.get("event_queue")
+    sandbox = configurable.get("sandbox")
 
     try:
-        if event_queue:
-            safe_send_event(event_queue, {
-                "e": "planner_started",
-                "message": "Planning the application architecture...",
-            })
+        if not sandbox:
+            raise Exception("Sandbox not available")
 
-        enhanced_prompt = state.get("enhanced_prompt", state.get("user_prompt", ""))
-        project_id = state.get("project_id", "")
         is_first_message = state.get("is_first_message", True)
-        print(f"INFO: Received prompt for project {project_id or '(unknown)'}")
+        user_prompt = state.get("user_prompt", "")
+        project_id = state.get("project_id", "")
+        api_key = configurable.get("openrouter_api_key")
+        builder_model = state.get("builder_model", "google/gemini-2.5-pro")
+        fast_model = get_fast_model(builder_model)
 
+        # ── Phase 1: Planning ────────────────────────────────
+
+        safe_send_event(event_queue, {"e": "enhancer_started", "message": "Understanding your idea..."})
+        safe_send_event(event_queue, {"e": "planner_started", "message": "Planning the application architecture..."})
+
+        # Load previous context for follow-ups
         previous_context = ""
-
-        # check if previous context is there
-        if project_id:
+        if project_id and not is_first_message:
             context = await asyncio.to_thread(load_json_store, project_id, "context.json")
             if context:
                 conv_text = ""
@@ -191,682 +188,357 @@ async def planner_node(state: GraphState, config: RunnableConfig) -> dict:
                     status = "[OK]" if conv.get("success") else "[FAIL]"
                     conv_text += f"  {i}. {status} {conv.get('user_prompt', '')[:80]}\n"
 
-                previous_context = f"""
-EXISTING PROJECT CONTEXT:
-- About: {context.get('semantic', 'N/A')}
-- How: {context.get('procedural', 'N/A')}
-- Done: {context.get('episodic', 'N/A')}
-- Files: {len(context.get('files_created', []))} exist
-{conv_text}
-Plan only NEW changes — don't recreate existing work."""
+                previous_context = (
+                    f"\n\nPREVIOUS PROJECT CONTEXT:"
+                    f"\n{context.get('semantic', '')}"
+                    f"\nFiles: {len(context.get('files_created', []))} created"
+                    f"\nHistory:\n{conv_text}"
+                )
 
-        user_message = f"""{previous_context}
+        planner_llm = create_llm(api_key, fast_model, max_tokens=4000)
 
-USER REQUEST: {enhanced_prompt}"""
-
-        messages = [
+        plan_messages = [
             SystemMessage(content=ENHANCER_PLANNER_PROMPT),
-            HumanMessage(content=user_message),
+            HumanMessage(content=f"{user_prompt}{previous_context}"),
         ]
 
-        if event_queue:
-            safe_send_event(event_queue, {"e": "thinking", "message": "Analyzing your request and creating implementation plan..."})
+        try:
+            structured_llm = planner_llm.with_structured_output(PlanSchema)
+            plan_response = await structured_llm.ainvoke(plan_messages)
+            plan = plan_response.dict() if hasattr(plan_response, "dict") else plan_response.model_dump()
+        except Exception:
+            # Fallback: raw text → parse as JSON
+            raw_response = await planner_llm.ainvoke(plan_messages)
+            raw_text = raw_response.content.strip()
+            if raw_text.startswith("```"):
+                raw_text = raw_text.split("```")[1]
+                if raw_text.startswith("json"):
+                    raw_text = raw_text[4:]
+            try:
+                plan = json.loads(raw_text)
+            except json.JSONDecodeError:
+                plan = {
+                    "overview": user_prompt,
+                    "components": [],
+                    "pages": [],
+                    "dependencies": [],
+                    "file_structure": [],
+                    "implementation_steps": [f"Build the application: {user_prompt}"],
+                }
 
-        await store_message(
-            chat_id=project_id,
-            role="assistant",
-            content="Analyzing your request and creating implementation plan...",
-            event_type="thinking"
+        print(f"Plan generated: {json.dumps(plan, indent=2)[:500]}")
+
+        # Emit plan events for frontend
+        formatted_plan = create_formatted_message("planner_complete", plan)
+        safe_send_event(event_queue, formatted_plan)
+
+        description = generate_description_from_plan(plan, user_prompt)
+        safe_send_event(event_queue, {"e": "description", "message": description})
+
+        await store_message(chat_id=project_id, role="assistant", content=description, event_type="description")
+
+        # ── Phase 2: Building ────────────────────────────────
+
+        safe_send_event(event_queue, {"e": "builder_started", "message": "Generating code for your application..."})
+
+        files_tracker: list = []
+        tool_mode = "first_build" if is_first_message else "follow_up"
+        tools = create_tools(
+            sandbox, event_queue, project_id,
+            files_tracker=files_tracker,
+            mode=tool_mode,
         )
 
-        # Single LLM call: enhances vague prompts AND produces the plan
-        api_key = configurable.get("openrouter_api_key")
-        builder_model = state.get("builder_model", "google/gemini-2.5-pro")
-        fast_model = get_fast_model(builder_model)
-        llm = create_llm(api_key, fast_model, max_tokens=4000)
-        print(f"Planner node: Using {fast_model} via OpenRouter (enhancement + planning merged)")
-        plan_result = await llm.with_structured_output(PlanSchema).ainvoke(messages)
-        plan = plan_result.model_dump()
+        system_prompt = BUILDER_SYSTEM_FIRST if is_first_message else BUILDER_SYSTEM_FOLLOWUP
+        builder_llm = create_llm(api_key, builder_model, max_tokens=16000)
 
-        # Create formatted plan message
-        formatted_plan_msg = create_formatted_message(
-            "planner_complete",
-            plan,
-            message="Planning completed successfully"
+        agent_executor = create_react_agent(
+            builder_llm,
+            tools,
+            prompt=SystemMessage(content=system_prompt),
         )
 
-        if event_queue:
-            safe_send_event(event_queue, formatted_plan_msg)
+        user_message = get_builder_prompt(plan, is_first_message)
+        messages = [HumanMessage(content=user_message)]
 
-        # Store plan completion with formatted markdown
-        await store_message(
-            chat_id=state.get("project_id"),
-            role="assistant",
-            content=formatted_plan_msg.get("formatted", json.dumps(plan, indent=2)),
-            event_type="planner_complete"
-        )
-
-        # Generate and send human-readable description
-        description = generate_description_from_plan(plan, enhanced_prompt)
-        if description:
-            if event_queue:
-                safe_send_event(event_queue, {"e": "description", "message": description})
-            await store_message(
-                chat_id=state.get("project_id"),
-                role="assistant",
-                content=description,
-                event_type="description"
+        try:
+            await asyncio.wait_for(
+                _stream_agent_events(agent_executor, messages, config, event_queue, project_id),
+                timeout=600,
             )
+        except asyncio.TimeoutError:
+            print("Builder agent timed out after 10 minutes")
+        except Exception as e:
+            print(f"Builder agent error: {e}")
+            traceback.print_exc()
+
+        # Emit build summary
+        summary = generate_build_summary(files_tracker, [], plan)
+        safe_send_event(event_queue, {"e": "summary", "message": summary})
+        safe_send_event(event_queue, {"e": "builder_complete", "message": "Build phase complete"})
+
+        await store_message(chat_id=project_id, role="assistant", content=summary, event_type="summary")
 
         return {
             "plan": plan,
-            "current_node": "planner",
-            "execution_log": [{"node": "planner", "status": "completed", "plan": plan}],
+            "files_created": files_tracker,
+            "current_node": "planner_builder",
+            "execution_log": [{"node": "planner_builder", "status": "completed", "files_created": files_tracker}],
         }
 
     except Exception as e:
-        error_msg = f"Planner node error: {str(e)}"
+        error_msg = f"Planner-builder error: {str(e)}"
         print(error_msg)
-
-        if event_queue:
-            safe_send_event(event_queue, {"e": "planner_error", "message": error_msg})
-
-        return {
-            "plan": {},
-            "current_node": "planner",
-            "error_message": error_msg,
-            "execution_log": [{"node": "planner", "status": "error", "error": error_msg}],
-        }
-
-
-async def builder_node(state: GraphState, config: RunnableConfig) -> dict:
-    """
-    Builder node: Creates and modifies files based on plan or feedback
-    """
-    configurable = config.get("configurable", {})
-    event_queue = configurable.get("event_queue")
-    sandbox = configurable.get("sandbox")
-
-    try:
-        if not sandbox:
-            raise Exception("Sandbox not available")
-
-        if event_queue:
-            safe_send_event(event_queue,
-                {
-                    "e": "builder_started",
-                    "message": "Generating code for your application...",
-                }
-            )
-
-        # On first message: patch vite.config.js AND reset Home.jsx to a blank
-        # placeholder so the LLM doesn't mistake the starter template for existing
-        # project work and exit without writing any files.
-        is_first_message = state.get("is_first_message", True)
-        if is_first_message:
-            vite_config = (
-                "import { defineConfig } from 'vite'\n"
-                "import react from '@vitejs/plugin-react'\n"
-                "import tailwindcss from '@tailwindcss/vite'\n\n"
-                "export default defineConfig({\n"
-                "  plugins: [react(), tailwindcss()],\n"
-                "  server: {\n"
-                "    host: true,\n"
-                "    allowedHosts: true\n"
-                "  }\n"
-                "})\n"
-            )
-            home_placeholder = (
-                "// PLACEHOLDER — replace this entire file with the real application\n"
-                "export default function Home() {\n"
-                "  return <div>Building your app...</div>\n"
-                "}\n"
-            )
-            try:
-                await sandbox.files.write("/home/user/react-app/vite.config.js", vite_config)
-                print("INFO: Patched vite.config.js to support JSX in .js files")
-            except Exception as e:
-                print(f"WARNING: Failed to patch vite.config.js: {e}")
-            try:
-                await sandbox.files.write("/home/user/react-app/src/pages/Home.jsx", home_placeholder)
-                print("INFO: Reset Home.jsx to placeholder for clean build")
-            except Exception as e:
-                print(f"WARNING: Failed to reset Home.jsx: {e}")
-
-        plan = state.get("plan", {})
-        if plan:
-            print("INFO: Plan received")
-
-        current_errors = state.get("current_errors", {})
-
-        project_id = state.get("project_id", "")
-
-        files_tracker: list = []
-        # First build: fewer tools (no get_context, save_context, delete_file, list_directory)
-        # = smaller tool schema = fewer tokens per LLM call
-        base_tools = create_tools_with_context(
-            sandbox, event_queue, project_id,
-            files_tracker=files_tracker,
-            first_build=is_first_message,
-            include_test_build=False,  # Builder should NOT self-test; that's the validator's job
-        )
-
-        if current_errors:
-            error_details = []
-            for error_type, errors in current_errors.items():
-                if isinstance(errors, list):
-                    for err in errors:
-                        if isinstance(err, dict):
-                            error_msg = err.get("error", str(err))
-                            error_details.append(f"ERROR: {error_msg}")
-                        else:
-                            error_details.append(f"ERROR: {str(err)}")
-                else:
-                    error_details.append(f"{error_type}: {str(errors)}")
-
-            builder_prompt = get_builder_error_prompt("\n".join(error_details))
-        else:
-            builder_prompt = get_builder_prompt(plan, is_first_message=is_first_message)
-
-        # Use the right system prompt based on first vs follow-up
-        system_prompt = INITPROMPT_FIRST if is_first_message else INITPROMPT_FOLLOWUP
-
-        messages = [
-            SystemMessage(content=system_prompt),
-            HumanMessage(content=builder_prompt),
-        ]
-
-        api_key = configurable.get("openrouter_api_key")
-        builder_model = state.get("builder_model", "google/gemini-2.5-pro")
-        builder_llm = create_llm(api_key, builder_model)
-        print(f"Builder node: Using {builder_model} via OpenRouter")
-        agent_executor = create_react_agent(builder_llm, tools=base_tools)
-        agent_config = {"recursion_limit": 50}
-
-        try:
-            print(
-                f"Builder node: Starting agent execution with {len(base_tools)} tools"
-            )
-
-            await asyncio.wait_for(
-                _stream_agent_events(
-                    agent_executor, messages, agent_config, event_queue, project_id
-                ),
-                timeout=600,
-            )
-            files_created = files_tracker
-            files_modified = []
-
-            print(f"Builder node: Agent execution completed")
-            print(f"Builder node: Final files_created: {files_created}")
-
-            print(f"INFO : {files_created}")
-
-            if event_queue:
-                safe_send_event(event_queue,
-                    {
-                        "e": "builder_complete",
-                        "files_created": files_created,
-                        "files_modified": files_modified,
-                        "message": "Building completed",
-                    }
-                )
-
-            # Generate and send human-readable build summary
-            summary = generate_build_summary(files_created, files_modified, plan)
-            if summary:
-                if event_queue:
-                    safe_send_event(event_queue, {"e": "summary", "message": summary})
-                await store_message(
-                    chat_id=state.get("project_id"),
-                    role="assistant",
-                    content=summary,
-                    event_type="summary"
-                )
-
-            return {
-                "files_created": files_created,
-                "files_modified": files_modified,
-                "current_errors": {},
-                "current_node": "builder",
-                "execution_log": [
-                    {
-                        "node": "builder",
-                        "status": "completed",
-                        "files_created": files_created,
-                        "files_modified": files_modified,
-                    }
-                ],
-            }
-
-        except asyncio.TimeoutError:
-            timeout_msg = "Builder agent timed out after 10 minutes"
-            print(timeout_msg)
-
-            if event_queue:
-                safe_send_event(event_queue, {"e": "builder_error", "message": timeout_msg})
-
-            return {
-                "files_created": files_tracker,  # preserve any files created before timeout
-                "files_modified": [],
-                "current_errors": {"builder_error": [{"type": "timeout", "error": timeout_msg}]},
-                "current_node": "builder",
-                "execution_log": [
-                    {"node": "builder", "status": "timeout", "files_created": files_tracker}
-                ],
-            }
-
-        except Exception as e:
-            error_msg = f"Builder agent execution error: {str(e)}"
-            print(error_msg)
-            traceback.print_exc()
-
-            if event_queue:
-                safe_send_event(event_queue, {"e": "builder_error", "message": error_msg})
-
-            return {
-                "files_created": files_tracker,  # preserve any files created before crash
-                "files_modified": [],
-                "current_errors": {"builder_error": [{"type": "exception", "error": error_msg}]},
-                "current_node": "builder",
-                "execution_log": [
-                    {"node": "builder", "status": "error", "files_created": files_tracker}
-                ],
-            }
-
-    except Exception as e:
-        error_msg = f"Builder node error: {str(e)}"
-        print(error_msg)
+        traceback.print_exc()
 
         if event_queue:
             safe_send_event(event_queue, {"e": "builder_error", "message": error_msg})
 
         return {
-            "current_node": "builder",
+            "plan": state.get("plan"),
+            "files_created": [],
+            "current_node": "planner_builder",
             "error_message": error_msg,
-            "current_errors": {"builder_error": [{"type": "node_error", "error": error_msg}]},
-            "execution_log": [{"node": "builder", "status": "error", "error": error_msg}],
+            "execution_log": [{"node": "planner_builder", "status": "error", "error": error_msg}],
         }
 
 
+# ─────────────────────────────────────────────────────────────
+# Node 2: BUILD CHECKPOINT (deterministic — no LLM)
+# ─────────────────────────────────────────────────────────────
 
-async def code_validator_node(state: GraphState, config: RunnableConfig) -> dict:
-    """
-    Code Validator node: Active React agent that reviews, validates, and fixes code
+async def build_checkpoint_node(state: GraphState, config: RunnableConfig) -> dict:
+    """Deterministic build check. Runs vite build + auto-installs missing packages.
+
+    No LLM call. Zero token cost.
     """
     configurable = config.get("configurable", {})
     event_queue = configurable.get("event_queue")
     sandbox = configurable.get("sandbox")
 
+    safe_send_event(event_queue, {"e": "code_validator_started", "message": "Validating and fixing any issues..."})
+
     try:
         if not sandbox:
             raise Exception("Sandbox not available")
 
-        if event_queue:
-            safe_send_event(event_queue,
-                {
-                    "e": "code_validator_started",
-                    "message": "Validating and fixing any issues...",
-                }
-            )
+        path = "/home/user/react-app"
 
-        project_id = state.get("project_id", "")
-        validation_results = {"errors": [], "summary": ""}
-        base_tools = create_tools_with_context(
-            sandbox, event_queue, project_id,
-            validation_results=validation_results,
-            include_test_build=False,
+        # Step 1: Auto-install missing packages
+        missing = await check_missing_packages_standalone(sandbox)
+        if missing:
+            print(f"Build checkpoint: installing missing packages: {missing}")
+            safe_send_event(event_queue, {"e": "missing_dependencies", "packages": missing})
+            install_cmd = f"npm install {' '.join(missing)}"
+            await sandbox.commands.run(install_cmd, cwd=path, timeout=120)
+
+        # Step 2: Clean Vite cache
+        await sandbox.commands.run("rm -rf node_modules/.vite-temp", cwd=path, timeout=10)
+
+        # Step 3: Run vite build
+        result = await asyncio.wait_for(
+            sandbox.commands.run("npx vite build --mode development 2>&1", cwd=path, timeout=120),
+            timeout=130,
         )
 
-        messages = [
-            SystemMessage(content=VALIDATOR_PROMPT),
-            HumanMessage(content="Begin your validation pass now. Start with check_missing_packages()."),
-        ]
+        build_passed = result.exit_code == 0
+        build_errors = "" if build_passed else (result.stderr or result.stdout or "Unknown build error")
 
+        if build_passed:
+            print("Build checkpoint: PASSED")
+            safe_send_event(event_queue, {"e": "validation_success", "message": "Build passed"})
+        else:
+            # Truncate errors to last 40 lines for the fixer
+            error_lines = build_errors.strip().split("\n")
+            build_errors = "\n".join(error_lines[-40:])
+            print(f"Build checkpoint: FAILED\n{build_errors[:500]}")
+            safe_send_event(event_queue, {"e": "build_test_failed", "message": "Build failed", "error": build_errors[:500]})
+
+        safe_send_event(event_queue, {"e": "code_validator_complete", "message": "Validation complete"})
+
+        return {
+            "build_passed": build_passed,
+            "build_errors": build_errors,
+            "current_node": "build_checkpoint",
+            "execution_log": [{"node": "build_checkpoint", "status": "passed" if build_passed else "failed"}],
+        }
+
+    except Exception as e:
+        error_msg = f"Build checkpoint error: {str(e)}"
+        print(error_msg)
+        safe_send_event(event_queue, {"e": "code_validator_complete", "message": error_msg})
+
+        return {
+            "build_passed": False,
+            "build_errors": error_msg,
+            "current_node": "build_checkpoint",
+            "execution_log": [{"node": "build_checkpoint", "status": "error", "error": error_msg}],
+        }
+
+
+# ─────────────────────────────────────────────────────────────
+# Node 3: FIXER (cheap model, only on build failure)
+# ─────────────────────────────────────────────────────────────
+
+async def fixer_node(state: GraphState, config: RunnableConfig) -> dict:
+    """Fix build errors using a cheap model (Flash/Haiku).
+
+    Only invoked when build_checkpoint fails. Gets 3 tools: read_file, create_file, execute_command.
+    Max 2 retries controlled by the graph edge function.
+    """
+    configurable = config.get("configurable", {})
+    event_queue = configurable.get("event_queue")
+    sandbox = configurable.get("sandbox")
+
+    fixer_retries = state.get("fixer_retries", 0)
+
+    try:
+        if not sandbox:
+            raise Exception("Sandbox not available")
+
+        build_errors = state.get("build_errors", "Unknown error")
+        project_id = state.get("project_id", "")
         api_key = configurable.get("openrouter_api_key")
         builder_model = state.get("builder_model", "google/gemini-2.5-pro")
         fast_model = get_fast_model(builder_model)
-        validator_llm = create_llm(api_key, fast_model, max_tokens=4000)
-        print(f"Validator node: Using {fast_model} via OpenRouter")
-        validator_agent = create_react_agent(validator_llm, tools=base_tools)
-        agent_config = {"recursion_limit": 15}  # Validator should finish in 3-5 tool calls
+
+        print(f"Fixer node: attempt {fixer_retries + 1}, fixing errors:\n{build_errors[:300]}")
+
+        tools = create_tools(sandbox, event_queue, project_id, mode="fixer")
+        fixer_llm = create_llm(api_key, fast_model, max_tokens=8000)
+
+        agent_executor = create_react_agent(
+            fixer_llm,
+            tools,
+            prompt=SystemMessage(content=FIXER_PROMPT),
+        )
+
+        user_message = get_fixer_prompt(build_errors)
+        messages = [HumanMessage(content=user_message)]
 
         try:
-            print(
-                f"Code validator: Starting agent execution with {len(base_tools)} tools"
-            )
-
             await asyncio.wait_for(
-                _stream_agent_events(
-                    validator_agent, messages, agent_config, event_queue, project_id
-                ),
-                timeout=300,  # 5 min — validator is lighter than builder
+                _stream_agent_events(agent_executor, messages, config, event_queue, project_id),
+                timeout=300,
             )
-
-            # Read what the agent actually reported via report_validation_result
-            raw_errors = validation_results.get("errors", [])
-            validation_errors = [
-                {"type": "code_error", "error": str(e)} for e in raw_errors
-            ]
-
-            print(f"Code validator: Agent execution completed")
-            print(f"Code validator: {len(validation_errors)} errors remain after fixes")
-
-            if event_queue:
-                safe_send_event(event_queue,
-                    {
-                        "e": "validation_success",
-                        "message": "Code validator completed - code review and dependencies checked!",
-                    }
-                )
-
-            update: dict = {
-                "validation_errors": validation_errors,
-                "current_node": "code_validator",
-                "execution_log": [
-                    {
-                        "node": "code_validator",
-                        "status": "completed",
-                        "validation_errors": validation_errors,
-                    }
-                ],
-            }
-
-            if validation_errors:
-                current_retry = state.get("retry_count", {}).get("validation_errors", 0)
-                update["retry_count"] = {
-                    **state.get("retry_count", {}),
-                    "validation_errors": current_retry + 1,
-                }
-                update["current_errors"] = {"validation_errors": validation_errors}
-                print(f"Code validator: Found {len(validation_errors)} validation errors")
-            else:
-                print("Code validator: No validation errors found")
-
-            if event_queue:
-                safe_send_event(event_queue,
-                    {
-                        "e": "code_validator_complete",
-                        "errors": validation_errors,
-                        "message": f"Code validation completed. Found {len(validation_errors)} errors.",
-                    }
-                )
-
-            return update
-
         except asyncio.TimeoutError:
-            print("Code validator agent timed out after 10 minutes")
+            print("Fixer agent timed out after 5 minutes")
+        except Exception as e:
+            print(f"Fixer agent error: {e}")
+            traceback.print_exc()
 
-            if event_queue:
-                safe_send_event(event_queue,
-                    {
-                        "e": "code_validator_timeout",
-                        "message": "Code validator timed out",
-                    }
-                )
-
-            timeout_errors = [
-                {"type": "timeout", "error": "Code validator timed out", "details": "Validation took too long"}
-            ]
-            current_retry = state.get("retry_count", {}).get("validation_errors", 0)
-            return {
-                "validation_errors": timeout_errors,
-                "current_node": "code_validator",
-                "retry_count": {
-                    **state.get("retry_count", {}),
-                    "validation_errors": current_retry + 1,
-                },
-                "current_errors": {"validation_errors": timeout_errors},
-                "execution_log": [
-                    {"node": "code_validator", "status": "timeout", "validation_errors": timeout_errors}
-                ],
-            }
+        return {
+            "fixer_retries": fixer_retries + 1,
+            "current_node": "fixer",
+            "execution_log": [{"node": "fixer", "status": "completed", "attempt": fixer_retries + 1}],
+        }
 
     except Exception as e:
-        error_msg = f"Code validator node error: {str(e)}"
+        error_msg = f"Fixer node error: {str(e)}"
         print(error_msg)
-        traceback.print_exc()
 
-        if event_queue:
-            safe_send_event(event_queue, {"e": "code_validator_error", "message": error_msg})
-
-        crash_errors = [{"type": "validator_error", "error": str(e), "details": "Code validator crashed"}]
-        current_retry = state.get("retry_count", {}).get("validation_errors", 0)
         return {
-            "current_node": "code_validator",
+            "fixer_retries": fixer_retries + 1,
+            "current_node": "fixer",
             "error_message": error_msg,
-            "validation_errors": crash_errors,
-            "retry_count": {
-                **state.get("retry_count", {}),
-                "validation_errors": current_retry + 1,
-            },
-            "current_errors": {"validation_errors": crash_errors},
-            "execution_log": [{"node": "code_validator", "status": "error", "error": error_msg}],
+            "execution_log": [{"node": "fixer", "status": "error", "error": error_msg}],
         }
 
 
-async def application_checker_node(state: GraphState, config: RunnableConfig) -> dict:
-    """
-    Application Checker node: Checks if the application is running and captures errors
+# ─────────────────────────────────────────────────────────────
+# Node 4: APP START (deterministic — no LLM)
+# ─────────────────────────────────────────────────────────────
+
+async def app_start_node(state: GraphState, config: RunnableConfig) -> dict:
+    """Ensure the Vite dev server is running and serving.
+
+    No LLM call. Just port checks and polling.
     """
     configurable = config.get("configurable", {})
     event_queue = configurable.get("event_queue")
     sandbox = configurable.get("sandbox")
 
+    safe_send_event(event_queue, {"e": "app_check_started", "message": "Starting your app and running final checks..."})
+
     try:
         if not sandbox:
             raise Exception("Sandbox not available")
 
-        if event_queue:
-            safe_send_event(event_queue,
-                {
-                    "e": "app_check_started",
-                    "message": "Starting your app and running final checks...",
-                }
-            )
-
+        path = "/home/user/react-app"
         runtime_errors = []
 
-        try:
-            # Stage 1: essential files exist
-            main_files = ["src/App.jsx", "src/main.jsx", "package.json"]
-            missing_files = []
+        # Check essential files
+        main_files = ["src/App.jsx", "src/main.jsx", "package.json"]
+        missing_files = []
+        for file_path in main_files:
+            try:
+                await sandbox.files.read(f"{path}/{file_path}")
+            except Exception:
+                missing_files.append(file_path)
 
-            for file_path in main_files:
-                try:
-                    await sandbox.files.read(f"/home/user/react-app/{file_path}")
-                except Exception:
-                    missing_files.append(file_path)
-
-            if missing_files:
-                runtime_errors.append(
-                    {
-                        "type": "missing_files",
-                        "error": f"Missing essential files: {', '.join(missing_files)}",
-                    }
-                )
-            else:
-                print("Application checker: All essential files present")
-
-                # Stage 2: Vite dev server is actually serving
-                # The sandbox runs Vite on port 5173 continuously; if it crashed
-                # (e.g. due to a JSX syntax error that slipped past the validator)
-                # curl will get a non-200 or a connection-refused.
-                try:
-                    # Ensure Vite is actually serving on port 5173.
-                    # npm install during the build kills the Vite process;
-                    # pgrep-based checks give false positives (matches npm cache entries),
-                    # so check the port directly instead.
-                    port_check = await sandbox.commands.run(
-                        "ss -tlnp 2>/dev/null | grep -q ':5173' && echo 'port_open' || echo 'port_closed'",
-                        cwd="/home/user/react-app",
-                    )
-                    if "port_closed" in port_check.stdout:
-                        print("Application checker: Port 5173 not listening — restarting Vite")
-                        await sandbox.commands.run(
-                            "nohup npm run dev -- --host 0.0.0.0 > /tmp/vite.log 2>&1 &",
-                            cwd="/home/user/react-app",
-                        )
-                        # Poll for Vite to start instead of fixed sleep
-                        for attempt in range(15):
-                            await asyncio.sleep(2)
-                            poll = await sandbox.commands.run(
-                                "ss -tlnp 2>/dev/null | grep -q ':5173' && echo 'ready' || echo 'waiting'",
-                                cwd="/home/user/react-app",
-                            )
-                            if "ready" in poll.stdout:
-                                print(f"Application checker: Vite ready after {(attempt + 1) * 2}s")
-                                break
-                        else:
-                            print("Application checker: Vite did not start within 30s")
-                    else:
-                        print("Application checker: Port 5173 is already open")
-
-                    vite_result = await sandbox.commands.run(
-                        "curl -s -o /dev/null -w '%{http_code}' --max-time 10 http://localhost:5173",
-                        cwd="/home/user/react-app",
-                    )
-                    http_code = vite_result.stdout.strip()
-                    if http_code == "200":
-                        print("Application checker: Vite dev server is responding (HTTP 200)")
-                    else:
-                        print(f"Application checker: Vite dev server returned HTTP {http_code}")
-                        runtime_errors.append(
-                            {
-                                "type": "vite_not_serving",
-                                "error": (
-                                    f"Vite dev server is not serving correctly (HTTP {http_code}). "
-                                    "The app likely has a syntax error or crashes on startup. "
-                                    "Check src/App.jsx and src/main.jsx for errors."
-                                ),
-                            }
-                        )
-                except Exception as e:
-                    print(f"Application checker: Vite server check failed: {e}")
-                    runtime_errors.append(
-                        {
-                            "type": "vite_check_failed",
-                            "error": f"Could not reach Vite dev server: {str(e)}",
-                        }
-                    )
-
-        except Exception as e:
-            runtime_errors.append(
-                {
-                    "type": "file_check_failed",
-                    "error": f"Failed to check application files: {str(e)}",
-                }
-            )
-
-        update: dict = {
-            "runtime_errors": runtime_errors,
-            "current_node": "application_checker",
-            "execution_log": [
-                {
-                    "node": "application_checker",
-                    "status": "completed",
-                    "runtime_errors": runtime_errors,
-                }
-            ],
-        }
-
-        if runtime_errors:
-            current_retry = state.get("retry_count", {}).get("runtime_errors", 0)
-            update["retry_count"] = {
-                **state.get("retry_count", {}),
-                "runtime_errors": current_retry + 1,
-            }
-            update["current_errors"] = {"runtime_errors": runtime_errors}
+        if missing_files:
+            runtime_errors.append(f"Missing essential files: {', '.join(missing_files)}")
         else:
-            update["success"] = True
-            print("Application checker: No runtime errors found - setting success to True")
-
-        if event_queue:
-            safe_send_event(event_queue,
-                {
-                    "e": "app_check_complete",
-                    "errors": runtime_errors,
-                    "message": f"Application check completed. Found {len(runtime_errors)} runtime errors.",
-                }
+            # Check if Vite is listening on port 5173
+            port_check = await sandbox.commands.run(
+                "ss -tlnp 2>/dev/null | grep -q ':5173' && echo 'port_open' || echo 'port_closed'",
+                cwd=path,
             )
+            if "port_closed" in port_check.stdout:
+                print("App start: Port 5173 not listening — restarting Vite")
+                await sandbox.commands.run(
+                    "nohup npm run dev -- --host 0.0.0.0 > /tmp/vite.log 2>&1 &",
+                    cwd=path,
+                )
+                # Poll for Vite to start
+                for attempt in range(15):
+                    await asyncio.sleep(2)
+                    poll = await sandbox.commands.run(
+                        "ss -tlnp 2>/dev/null | grep -q ':5173' && echo 'ready' || echo 'waiting'",
+                        cwd=path,
+                    )
+                    if "ready" in poll.stdout:
+                        print(f"App start: Vite ready after {(attempt + 1) * 2}s")
+                        break
+                else:
+                    print("App start: Vite did not start within 30s")
+            else:
+                print("App start: Port 5173 already open")
 
-        return update
+            # Verify HTTP response
+            vite_result = await sandbox.commands.run(
+                "curl -s -o /dev/null -w '%{http_code}' --max-time 10 http://localhost:5173",
+                cwd=path,
+            )
+            http_code = vite_result.stdout.strip()
+            if http_code == "200":
+                print("App start: Vite is responding (HTTP 200)")
+            else:
+                print(f"App start: Vite returned HTTP {http_code}")
+                runtime_errors.append(f"Vite dev server returned HTTP {http_code}")
 
-    except Exception as e:
-        error_msg = f"Application checker node error: {str(e)}"
-        print(error_msg)
-
-        if event_queue:
-            safe_send_event(event_queue, {"e": "app_check_error", "message": error_msg})
+        success = len(runtime_errors) == 0
+        safe_send_event(event_queue, {
+            "e": "app_check_complete",
+            "errors": runtime_errors,
+            "message": "App is ready" if success else f"App check found {len(runtime_errors)} issues",
+        })
 
         return {
-            "current_node": "application_checker",
-            "error_message": error_msg,
-            "execution_log": [{"node": "application_checker", "status": "error", "error": error_msg}],
+            "success": success,
+            "current_node": "app_start",
+            "error_message": "; ".join(runtime_errors) if runtime_errors else None,
+            "execution_log": [{"node": "app_start", "status": "completed", "errors": runtime_errors}],
         }
 
+    except Exception as e:
+        error_msg = f"App start error: {str(e)}"
+        print(error_msg)
+        safe_send_event(event_queue, {"e": "app_check_error", "message": error_msg})
 
-def should_retry_builder_for_validation(state: GraphState) -> str:
-    """Decide whether to retry builder for validation errors or continue"""
-    validation_errors = state.get("validation_errors", [])
-    retry_count = state.get("retry_count", {})
-    max_retries = state.get("max_retries", 3)
-
-    # Safety check: prevent infinite loops
-    total_retries = sum(retry_count.values())
-    if total_retries > 10:
-        print(
-            f"Maximum total retries reached ({total_retries}) - continuing to application checker"
-        )
-        return "application_checker"
-
-    print(
-        f"Code validator decision: {len(validation_errors)} errors, {retry_count.get('validation_errors', 0)} retries"
-    )
-
-    if not validation_errors:
-        print("No validation errors - continuing to application checker")
-        return "application_checker"
-
-    current_retries = retry_count.get("validation_errors", 0)
-    if current_retries < max_retries:
-        print(
-            f"Retrying builder for validation errors (attempt {current_retries + 1}/{max_retries})"
-        )
-        return "builder"
-    else:
-        print(
-            f"Max retries reached for validation errors - continuing to application checker"
-        )
-        return "application_checker"
-
-
-def should_retry_builder_or_finish(state: GraphState) -> str:
-    """Decide whether to retry builder or finish based on runtime errors"""
-    runtime_errors = state.get("runtime_errors", [])
-    retry_count = state.get("retry_count", {})
-    max_retries = state.get("max_retries", 3)
-
-    # Safety check: prevent infinite loops
-    total_retries = sum(retry_count.values())
-    if total_retries > 10:
-        print(f"Maximum total retries reached ({total_retries}) - forcing end")
-        return "end"
-
-    print(
-        f"Application checker decision: {len(runtime_errors)} errors, {retry_count.get('runtime_errors', 0)} retries"
-    )
-
-    if not runtime_errors:
-        print("No runtime errors - finishing successfully")
-        return "end"
-
-    current_retries = retry_count.get("runtime_errors", 0)
-    if current_retries < max_retries:
-        print(
-            f"Retrying builder for runtime errors (attempt {current_retries + 1}/{max_retries})"
-        )
-        return "builder"
-    else:
-        print(f"Max retries reached for runtime errors - finishing with errors")
-        return "end"
+        return {
+            "success": False,
+            "current_node": "app_start",
+            "error_message": error_msg,
+            "execution_log": [{"node": "app_start", "status": "error", "error": error_msg}],
+        }

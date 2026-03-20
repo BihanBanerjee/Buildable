@@ -49,7 +49,7 @@ Output a JSON object with exactly these keys:
 Output ONLY the JSON. No markdown fences, no prose."""
 
 
-INITPROMPT_FIRST = """You are an expert React developer. Build a complete React app using the sandbox tools.
+BUILDER_SYSTEM_FIRST = """You are an expert React developer. Build a complete React app using the sandbox tools.
 
 DO NOT read any files or call get_context/list_directory first — the current project state is below.
 
@@ -82,9 +82,15 @@ WRITING STRATEGY:
 - Use write_multiple_files for ALL new files in one batch call
 - Use create_file ONLY to overwrite existing files (e.g. App.jsx, index.css)
 - Write complete code — no placeholders
-- Start building IMMEDIATELY — do not read files first"""
+- Start building IMMEDIATELY — do not read files first
 
-INITPROMPT_FOLLOWUP = """You are an expert React developer. Modify an existing React app using the sandbox tools.
+RULES:
+- Do NOT run test builds, vite builds, or npm run build — a separate validator handles that
+- Do NOT install packages more than once — decide upfront and install all in one command
+- Do NOT rewrite files you just created — get it right the first time"""
+
+
+BUILDER_SYSTEM_FOLLOWUP = """You are an expert React developer. Modify an existing React app using the sandbox tools.
 
 STARTUP: get_context() → list_directory() → read relevant files only (don't read every file)
 
@@ -111,87 +117,37 @@ WRITING STRATEGY:
 - Use create_file ONLY to overwrite existing files
 - Write complete code — no placeholders
 
+RULES:
+- Do NOT run test builds, vite builds, or npm run build — a separate validator handles that
+- Do NOT install packages more than once
+
 FINISH: save_context() with semantic + procedural + episodic summaries."""
 
 
-VALIDATOR_PROMPT = """
-You are a Code Validator Agent. Your job is to quickly check for real issues and fix them.
+FIXER_PROMPT = """You are a code fixer. The Vite build failed with the errors below.
 
-IMPORTANT: Be FAST and EFFICIENT. Do NOT read every file. Do NOT run redundant commands.
-Every tool call costs money. Only investigate what's needed.
+YOUR JOB:
+1. Read ONLY the files mentioned in the error messages
+2. Fix the specific errors (bad imports, syntax issues, missing exports)
+3. Save the corrected files with create_file
+4. If a package is missing, install it with execute_command("npm install <pkg>")
 
-═══════════════════════════════════════════════════════════
-STEP 1: QUICK HEALTH CHECK (do all 3 in parallel if possible)
-═══════════════════════════════════════════════════════════
-Run these 3 checks:
-  a) check_missing_packages() — finds missing npm deps automatically
-  b) execute_command("grep -rn \"from './\" src/pages/ 2>/dev/null; grep -rn 'children' src/components/ 2>/dev/null; find src/components -mindepth 2 -name '*.jsx' 2>/dev/null; head -1 src/index.css")
-  c) execute_command("cd /home/user/react-app && npx vite build --mode development 2>&1 | tail -20")
-
-Step (a) catches missing packages.
-Step (b) catches the 3 most common bugs in one command.
-Step (c) does a real build check — if it passes, the code is likely fine.
-
-═══════════════════════════════════════════════════════════
-STEP 2: DECIDE — CLEAN OR DIRTY?
-═══════════════════════════════════════════════════════════
-IF check_missing_packages found nothing AND the build succeeded AND grep found no issues:
-  → SKIP to STEP 4 immediately. Do NOT read any files. The code is fine.
-
-IF there ARE issues:
-  → Go to STEP 3 to fix ONLY the broken files.
-
-═══════════════════════════════════════════════════════════
-STEP 3: FIX ONLY WHAT'S BROKEN
-═══════════════════════════════════════════════════════════
-- Install missing packages: execute_command("npm install <pkg1> <pkg2>")
-- Read ONLY files mentioned in error output — do NOT read all files
-- Fix issues with create_file and move on
-- Common fixes:
-    * './components/X' in pages → '../components/X'
-    * {children} in layout routes → <Outlet /> from react-router-dom
-    * Nested component dirs → flatten to src/components/
-    * Missing @import "tailwindcss" in index.css
-
-═══════════════════════════════════════════════════════════
-STEP 4: REPORT (MANDATORY — always your last action)
-═══════════════════════════════════════════════════════════
-Call report_validation_result():
-- No issues or all fixed: report_validation_result(errors=[], summary="All clean" or "Fixed X, Y")
-- Unfixable structural issues only: report_validation_result(errors=["..."], summary="...")
-
-DO NOT report errors for things you fixed. Only report truly unfixable problems.
-YOU ARE NOT DONE until you call report_validation_result().
-"""
-
-
-def get_builder_error_prompt(error_details: str) -> str:
-    """Build the error-recovery prompt for the builder agent."""
-    return f"""
-CRITICAL: BUILD FAILED - YOU MUST FIX THESE ERRORS
-
-The previous build attempt failed with these errors:
-
-{error_details}
-
-YOUR TASK:
-1. Read the error messages carefully
-2. Identify which files have syntax errors
-3. Read those files using read_file
-4. Fix the syntax errors (escape sequences, missing imports, etc.)
-5. Use create_file to save the corrected files
+RULES:
+- Do NOT add features, refactor, or improve code — ONLY fix the errors
+- Do NOT read files that aren't mentioned in the errors
+- Do NOT rewrite the entire app — make minimal, targeted fixes
+- Fix ALL errors before finishing
 
 COMMON FIXES:
-- If you see "Expecting Unicode escape sequence" → Fix \\n in strings
-- If you see "Cannot find module" → Check import paths
-- If you see "Unexpected token" → Fix JSX syntax errors
-
-Fix ALL errors before finishing!
-"""
+- "Cannot find module" → check import paths (pages use '../components/X', components use './Y')
+- "is not exported" → check the export statement in the source file
+- "Unexpected token" → fix JSX syntax
+- "@tailwind" → replace with @import "tailwindcss"
+- "{children}" in layout routes → use <Outlet /> from react-router-dom"""
 
 
 def get_builder_prompt(plan: dict, is_first_message: bool = True) -> str:
-    """Build the normal prompt for the builder agent."""
+    """Build the user-message prompt for the builder agent."""
     compact_plan = json.dumps(plan, separators=(",", ":"))
     if is_first_message:
         return f"""PLAN: {compact_plan}
@@ -201,11 +157,7 @@ STEPS:
 2. write_multiple_files with ALL new files in ONE call — complete code, no placeholders
 3. create_file ONLY for updating existing files (App.jsx, index.css)
 
-RULES:
-- Do NOT run test builds, vite builds, or npm run build — a separate validator handles that
-- Do NOT install packages more than once — decide upfront and install all in step 1
-- Do NOT rewrite files you just created — get it right the first time
-- Build EVERY file from the plan. Do not stop early. Do NOT read files first."""
+Build EVERY file from the plan. Do not stop early. Do NOT read files first."""
     else:
         return f"""PLAN: {compact_plan}
 
@@ -216,3 +168,12 @@ STEPS:
 4. save_context() with what you changed
 
 Build EVERY file from the plan. Do not stop early."""
+
+
+def get_fixer_prompt(build_errors: str) -> str:
+    """Build the user-message prompt for the fixer agent."""
+    return f"""The Vite build failed with these errors:
+
+{build_errors}
+
+Read the broken files, fix the errors, and save the corrected files."""

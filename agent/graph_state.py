@@ -3,36 +3,34 @@ import operator
 
 
 class GraphState(TypedDict):
-    """State schema for the LangGraph multi-agent system"""
+    """State schema for the 2-agent + deterministic checkpoint orchestration.
 
-    project_id: str  # Also serves as chat_id
+    Pipeline: planner_builder → build_checkpoint ⇄ fixer → app_start
+    """
+
+    project_id: str
     user_prompt: str
-    enhanced_prompt: str
-    is_first_message: bool  # True for initial build, False for follow-up prompts
+    is_first_message: bool
 
-    # Planning phase
+    # Plan (produced by planner_builder, used for description/summary)
     plan: Optional[Dict[str, Any]]
 
-    # Building phase
-    # Annotated with operator.add so lists accumulate across builder retries
-    # rather than being overwritten. Deduplicate at read time in service.py.
+    # Files tracking (accumulates across fixer retries)
     files_created: Annotated[List[str], operator.add]
-    files_modified: List[str]
 
-    # Error tracking
-    current_errors: Dict[str, Any]
-    validation_errors: List[Dict[str, Any]]
-    runtime_errors: List[Dict[str, Any]]
+    # Build checkpoint results
+    build_passed: bool
+    build_errors: str  # stderr from failed vite build (empty if passed)
 
-    # Retry tracking
-    retry_count: Dict[str, int]
-    max_retries: int
+    # Fixer retry tracking
+    fixer_retries: int
+    max_fixer_retries: int
 
-    # Node execution tracking
+    # Node tracking
     current_node: str
     execution_log: Annotated[List[Dict[str, Any]], operator.add]
 
-    # Full OpenRouter model ID for the builder node (e.g. "google/gemini-2.5-pro")
+    # Model selection (full OpenRouter model ID, e.g. "google/gemini-2.5-pro")
     builder_model: str
 
     # Results
