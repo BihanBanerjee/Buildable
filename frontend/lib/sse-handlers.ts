@@ -169,6 +169,13 @@ export function handleSSEMessage(event: MessageEvent, handlers: SSEHandlers) {
       handlers.setBuildStage("completed");
 
       const duration = (data.duration_s as number) || undefined;
+      const isSuccess = data.success !== false; // default to true if not specified
+
+      // If workflow failed, show error
+      if (!isSuccess) {
+        const errorMsg = "Build completed with errors. Some features may not work correctly.";
+        handlers.setError(errorMsg);
+      }
 
       // Mark last message as completed AND force-resolve any stuck tool_calls
       handlers.setMessages((prev) => {
@@ -180,12 +187,13 @@ export function handleSSEMessage(event: MessageEvent, handlers: SSEHandlers) {
             const updates: Record<string, unknown> = { tool_calls: resolvedCalls };
             if (idx === prev.length - 1) {
               updates.isCompleted = true;
+              updates.isSuccess = isSuccess;
               if (duration) updates.buildDuration = duration;
             }
             return { ...msg, ...updates };
           }
           if (idx === prev.length - 1 && msg.role === "assistant") {
-            return { ...msg, isCompleted: true, ...(duration ? { buildDuration: duration } : {}) };
+            return { ...msg, isCompleted: true, isSuccess, ...(duration ? { buildDuration: duration } : {}) };
           }
           return msg;
         });
@@ -207,7 +215,33 @@ export function handleSSEMessage(event: MessageEvent, handlers: SSEHandlers) {
     }
 
     if (data.e === "error") {
-      handlers.setError((data.message as string) || "An error occurred");
+      const errorMessage = (data.message as string) || "An error occurred";
+      handlers.setError(errorMessage);
+      handlers.setIsBuilding(false);
+      handlers.setIsSending(false);
+      handlers.setBuildStage("completed");
+
+      // Show error as a message in the chat
+      handlers.setMessages((prev) => {
+        const lastMsg = prev[prev.length - 1];
+        if (lastMsg?.role === "assistant") {
+          return [
+            ...prev.slice(0, -1),
+            { ...lastMsg, content: `⚠️ ${errorMessage}` },
+          ];
+        }
+        return [
+          ...prev,
+          {
+            id: Date.now().toString() + "-error",
+            role: "assistant" as const,
+            content: `⚠️ ${errorMessage}`,
+            created_at: new Date().toISOString(),
+            event_type: "error",
+          },
+        ];
+      });
+      return;
     }
 
     if (data.e === "chat_response") {

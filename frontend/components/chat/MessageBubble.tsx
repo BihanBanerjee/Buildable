@@ -16,6 +16,7 @@ interface Message {
   formatted?: string;
   event_type?: string;
   isCompleted?: boolean;
+  isSuccess?: boolean;
   isProgress?: boolean;
   summary?: string;
   buildDuration?: number;
@@ -271,10 +272,21 @@ export function MessageBubble({ message, isLastMessage }: MessageBubbleProps) {
 
         {message.isCompleted && (
           <div className="flex items-center gap-2 mt-3 pt-3 border-t border-border">
-            <CheckCircle2 size={15} className="text-primary shrink-0" />
-            <span className="text-sm text-primary font-medium">
-              Your app is ready
-            </span>
+            {message.isSuccess !== false ? (
+              <>
+                <CheckCircle2 size={15} className="text-primary shrink-0" />
+                <span className="text-sm text-primary font-medium">
+                  Your app is ready
+                </span>
+              </>
+            ) : (
+              <>
+                <AlertCircle size={15} className="text-orange-400 shrink-0" />
+                <span className="text-sm text-orange-400 font-medium">
+                  Build completed with errors
+                </span>
+              </>
+            )}
             {message.buildDuration && (
               <span className="inline-flex items-center gap-1 text-xs text-muted-foreground ml-auto tabular-nums">
                 <Clock size={11} className="shrink-0" />

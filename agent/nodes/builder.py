@@ -92,16 +92,47 @@ async def builder_node(state: GraphState, config: RunnableConfig) -> dict:
             user_message = get_builder_prompt(plan, scaffold_ok)
         messages = [HumanMessage(content=user_message)]
 
+        builder_error = None
         try:
             await asyncio.wait_for(
                 stream_agent_events(agent_executor, messages, config, event_queue, project_id),
                 timeout=180,
             )
         except asyncio.TimeoutError:
+            builder_error = "Build timed out after 3 minutes. Please try a simpler prompt."
             print("Builder agent timed out after 3 minutes")
         except Exception as e:
+            error_str = str(e)
             print(f"Builder agent error: {e}")
             traceback.print_exc()
+
+            # Detect API credit/quota errors and surface them clearly
+            if "402" in error_str or "credits" in error_str.lower() or "afford" in error_str.lower():
+                builder_error = "Insufficient API credits. Please add credits to your API provider and try again."
+            elif "429" in error_str or "rate" in error_str.lower():
+                builder_error = "API rate limit reached. Please wait a moment and try again."
+            elif "401" in error_str or "unauthorized" in error_str.lower():
+                builder_error = "API authentication failed. Please check your API key."
+
+        # Detect empty builds on first message (builder ran but created nothing)
+        if is_first_message and not files_tracker and not builder_error:
+            builder_error = "Build failed — no files were generated. This may be due to an API issue. Please try again."
+
+        # If there was a critical error, send it to the user and abort
+        if builder_error:
+            safe_send_event(event_queue, {"e": "error", "message": builder_error})
+            safe_send_event(event_queue, {"e": "builder_complete", "message": "Build phase complete"})
+
+            await store_message(chat_id=project_id, role="assistant", content=builder_error, event_type="error")
+
+            log_entry = timer.stop(status="error", error=builder_error)
+            return {
+                "files_created": [],
+                "current_node": "builder",
+                "error_message": builder_error,
+                "success": False,
+                "execution_log": [log_entry],
+            }
 
         # Emit build summary
         summary = generate_build_summary(files_tracker, [], plan)
@@ -123,7 +154,7 @@ async def builder_node(state: GraphState, config: RunnableConfig) -> dict:
         traceback.print_exc()
 
         if event_queue:
-            safe_send_event(event_queue, {"e": "builder_error", "message": error_msg})
+            safe_send_event(event_queue, {"e": "error", "message": error_msg})
 
         log_entry = timer.stop(status="error", error=error_msg)
         return {
