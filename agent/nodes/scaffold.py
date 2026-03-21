@@ -118,8 +118,6 @@ async def _update_routes_for_new_pages(sandbox, plan: dict, event_queue) -> list
 
     print(f"Scaffold follow-up: adding {len(new_pages)} new page(s): {new_pages}")
 
-    # Merge existing + new pages and regenerate App.jsx
-    all_pages = list(existing_pages) + new_pages
     # Preserve original ordering: existing first (in their order), then new
     # We'll just regenerate with all planned pages since the plan is authoritative
     components = plan.get("components", [])
@@ -227,7 +225,7 @@ async def scaffold_node(state: GraphState, config: RunnableConfig) -> dict:
                         f"npm install --legacy-peer-deps {dep_str}", cwd=path, timeout=120
                     )
                     install_ok = True
-                    print(f"Scaffold npm install succeeded with --legacy-peer-deps")
+                    print("Scaffold npm install succeeded with --legacy-peer-deps")
                 except Exception as retry_err:
                     print(f"Scaffold npm install failed even with --legacy-peer-deps: {str(retry_err)[:200]}")
 

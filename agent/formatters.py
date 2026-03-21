@@ -3,7 +3,6 @@ Message formatting utilities for better frontend display
 """
 import json
 import re
-from typing import List
 
 
 def format_json_as_markdown(data: dict, title: str = None) -> str:

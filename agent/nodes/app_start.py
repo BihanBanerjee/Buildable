@@ -57,7 +57,7 @@ async def _check_runtime_errors(sandbox, path: str) -> list[str]:
             snippet = re.sub(r"<[^>]+>", " ", snippet)
             snippet = re.sub(r"\s+", " ", snippet).strip()
             errors.append(f"Page contains error: {snippet[:300]}")
-            print(f"App start: Runtime error detected in page HTML")
+            print("App start: Runtime error detected in page HTML")
     except Exception as e:
         print(f"App start: Failed to fetch page body: {e}")
 

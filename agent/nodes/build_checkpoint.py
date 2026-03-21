@@ -5,7 +5,6 @@ Runs `npx vite build`, auto-installs missing packages on fixer retries.
 """
 
 import asyncio
-import traceback
 
 from langchain_core.runnables import RunnableConfig
 
@@ -32,7 +31,6 @@ async def build_checkpoint_node(state: GraphState, config: RunnableConfig) -> di
             raise Exception("Sandbox not available")
 
         path = "/home/user/react-app"
-        fixer_retries = state.get("fixer_retries", 0)
 
         # Always check for missing packages — the builder may use deps not in the plan
         missing = await check_missing_packages_standalone(sandbox)
@@ -50,7 +48,7 @@ async def build_checkpoint_node(state: GraphState, config: RunnableConfig) -> di
                 # Fallback for React 19 peer dep conflicts
                 try:
                     await sandbox.commands.run(f"{install_cmd} --legacy-peer-deps", cwd=path, timeout=120)
-                    print(f"Build checkpoint: installed with --legacy-peer-deps")
+                    print("Build checkpoint: installed with --legacy-peer-deps")
                 except Exception as e:
                     print(f"Build checkpoint: npm install failed: {e}")
             safe_send_event(event_queue, {

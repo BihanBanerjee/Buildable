@@ -3,7 +3,6 @@ import asyncio
 import re
 from langchain_core.tools import tool
 import os
-import json
 from datetime import datetime
 from utils.store import save_json_store, load_json_store
 
@@ -111,8 +110,6 @@ def create_tools(
     async def execute_command(command: str) -> str:
         """Run a shell command in react-app dir."""
         try:
-            cmd_lower = command.strip().lower()
-
             # Fixer mode: ONLY allow "npm install <packages>"
             if mode == "fixer":
                 if not _NPM_INSTALL_RE.match(command.strip()):
