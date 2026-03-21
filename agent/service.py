@@ -118,38 +118,40 @@ class Service:
             print(f"closed sandbox: {id}")
 
     async def _restore_files_from_disk(self, project_id: str, sandbox: AsyncSandbox):
-        """Restore files from disk to sandbox"""
+        """Restore files from R2 (primary) or local cache to sandbox."""
+        from utils.store import load_all_project_files, load_project_metadata
 
-        project_dir = os.path.join(self.storage_base_path, project_id)
+        # Try R2 first (has original file paths), fall back to local cache
+        files_dict = load_all_project_files(project_id)
 
-        if not os.path.exists(project_dir):
-            print(f"No stored files found for project {project_id}")
-            return
+        if not files_dict:
+            # Fallback: load from local cache using metadata
+            metadata = load_project_metadata(project_id)
+            file_list = metadata.get("files", [])
+            if not file_list:
+                print(f"No stored files found for project {project_id}")
+                return
 
-        metadata_file = os.path.join(project_dir, "metadata.json")
-        if not os.path.exists(metadata_file):
-            print(f"No metadata found for project {project_id}")
-            return
-
-        with open(metadata_file, "r") as f:
-            metadata = json.load(f)
-
-        files = metadata.get("files", [])
-        print(f"Restoring {len(files)} files for project {project_id}")
-
-        async def write_one(file_path: str):
-            try:
+            project_dir = os.path.join(self.storage_base_path, project_id)
+            for file_path in file_list:
                 local_file = os.path.join(project_dir, file_path.replace("/", "_"))
                 if os.path.exists(local_file):
                     with open(local_file, "r", encoding="utf-8") as f:
-                        content = f.read()
-                    await sandbox.files.write(f"/home/user/react-app/{file_path}", content)
-                else:
-                    print(f"Local file not found: {local_file}")
+                        files_dict[file_path] = f.read()
+
+        if not files_dict:
+            print(f"No files to restore for project {project_id}")
+            return
+
+        print(f"Restoring {len(files_dict)} files for project {project_id}")
+
+        async def write_one(file_path: str, content: str):
+            try:
+                await sandbox.files.write(f"/home/user/react-app/{file_path}", content)
             except Exception as e:
                 print(f"Failed to restore {file_path}: {e}")
 
-        await asyncio.gather(*[write_one(p) for p in files])
+        await asyncio.gather(*[write_one(p, c) for p, c in files_dict.items()])
         print(f"File restoration complete for project {project_id}")
 
         # Clean Vite cache
@@ -190,13 +192,11 @@ class Service:
             print(f"Failed to save conversation history: {e}")
 
     async def snapshot_project_files(self, project_id: str):
-        """Snapshot all source files from sandbox to disk."""
+        """Snapshot all source files from sandbox to R2 + local cache."""
         if project_id not in self.sandboxes:
             return
 
         sandbox = self.sandboxes[project_id]
-        project_dir = os.path.join(self.storage_base_path, project_id)
-        os.makedirs(project_dir, exist_ok=True)
 
         find_result = await sandbox.commands.run(
             "find src public -type f 2>/dev/null; "
@@ -214,31 +214,29 @@ class Service:
             print(f"No files found to snapshot for project {project_id}")
             return
 
-        async def read_and_save(file_path: str):
+        # Read all files from sandbox
+        files_dict: dict[str, str] = {}
+        async def read_file(file_path: str):
             try:
                 content = await sandbox.files.read(f"/home/user/react-app/{file_path}")
-                local_file = os.path.join(project_dir, file_path.replace("/", "_"))
-                with open(local_file, "w", encoding="utf-8") as f:
-                    f.write(content)
-                return file_path
+                files_dict[file_path] = content
             except Exception as e:
-                print(f"Failed to snapshot {file_path}: {e}")
-                return None
+                print(f"Failed to read {file_path}: {e}")
 
-        results = await asyncio.gather(*[read_and_save(p) for p in file_paths])
-        files_stored = [p for p in results if p is not None]
+        await asyncio.gather(*[read_file(p) for p in file_paths])
 
-        metadata = {
-            "project_id": project_id,
-            "sandbox_id": sandbox.sandbox_id,
-            "files": files_stored,
-            "timestamp": time.time(),
-        }
-        metadata_file = os.path.join(project_dir, "metadata.json")
-        with open(metadata_file, "w") as f:
-            json.dump(metadata, f, indent=2)
+        if not files_dict:
+            return
 
-        print(f"Snapshotted {len(files_stored)} files for project {project_id} to disk")
+        # Save to R2 (primary) + local cache via store module
+        from utils.store import save_project_files_bulk, save_project_metadata
+        save_project_files_bulk(project_id, files_dict)
+        save_project_metadata(
+            project_id,
+            list(files_dict.keys()),
+        )
+
+        print(f"Snapshotted {len(files_dict)} files for project {project_id}")
 
     async def _classify_prompt(self, prompt: str, api_key: str, builder_model: str, project_id: str = "", is_first_message: bool = True) -> str:
         """Classify whether the prompt is a build request or general chat.

@@ -312,16 +312,13 @@ async def get_file_content(
         except Exception as e:
             print(f"Live sandbox read failed for {file_path}, falling back to disk: {e}")
 
-    # Fall back to disk snapshot (sandbox expired or read failed)
-    disk_file = os.path.join(
-        agent_service.storage_base_path, id, file_path.replace("/", "_")
-    )
-    if os.path.exists(disk_file):
-        with open(disk_file, "r", encoding="utf-8") as f:
-            content = f.read()
+    # Fall back to local cache, then R2
+    from utils.store import load_file_content
+    content = load_file_content(id, file_path)
+    if content:
         return {"file_path": file_path, "content": content}
 
-    raise HTTPException(status_code=404, detail="File not found in sandbox or disk snapshot.")
+    raise HTTPException(status_code=404, detail="File not found in sandbox or storage.")
 
 
 @app.post("/projects/{id}/restart")
@@ -441,11 +438,9 @@ async def delete_project(
         except Exception:
             pass
 
-    # 4. Delete disk snapshot directory
-    project_dir = os.path.join(agent_service.storage_base_path, id)
-    if os.path.exists(project_dir):
-        import shutil
-        shutil.rmtree(project_dir, ignore_errors=True)
+    # 4. Delete from R2 + local cache
+    from utils.store import cleanup_project_store
+    cleanup_project_store(id)
 
     # 5. Delete DB records (messages first, then chat)
     await db.execute(delete(Message).where(Message.chat_id == id))
