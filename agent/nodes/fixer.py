@@ -16,7 +16,7 @@ from ..graph_state import GraphState
 from ..agent import create_llm
 from ..tools import create_tools
 from ..prompts import FIXER_PROMPT, get_fixer_prompt
-from .helpers import safe_send_event, stream_agent_events, NodeTimer
+from .helpers import stream_agent_events, NodeTimer
 
 
 async def fixer_node(state: GraphState, config: RunnableConfig) -> dict:

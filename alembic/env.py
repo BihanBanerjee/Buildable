@@ -13,7 +13,6 @@ load_dotenv()
 
 # Import your models here
 from db.base import Base
-from db.models import User, Chat, Message  # Import all models
 # env.py imports Base from db/base.py and all your models from db/models.py
 # The moment Python imports User, Chat, Message — those classes register themselves onto Base.metadata (that's what SQLAlchemy's DeclarativeBase does automatically)
 

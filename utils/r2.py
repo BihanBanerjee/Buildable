@@ -181,7 +181,7 @@ def download_json(project_id: str, filename: str) -> Optional[dict]:
         key = f"{project_id}/{filename}"
         response = client.get_object(Bucket=BUCKET, Key=key)
         return json.loads(response["Body"].read().decode("utf-8"))
-    except Exception as e:
+    except Exception:
         # Not an error — file might not exist yet
         return None
 
