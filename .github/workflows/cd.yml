@@ -1,0 +1,27 @@
+name: CD
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+
+jobs:
+  deploy:
+    name: Deploy Backend
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+
+    steps:
+      - name: Deploy to Droplet
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.DROPLET_HOST }}
+          username: root
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            cd ~/Buildable
+            git pull origin main
+            uv sync
+            systemctl restart buildable-api
+            echo "Deployed commit: $(git rev-parse --short HEAD)"
