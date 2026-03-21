@@ -1,10 +1,10 @@
 #!/bin/bash
 # ──────────────────────────────────────────────
-# SSL Bootstrap Script for buildable.bihanbanerjee.com
+# SSL Bootstrap Script for api.buildable.bihanbanerjee.com
 # Run this ONCE on the Droplet to get the first SSL certificate
 # ──────────────────────────────────────────────
 
-DOMAIN="buildable.bihanbanerjee.com"
+DOMAIN="api.buildable.bihanbanerjee.com"
 EMAIL="banerjeebihan456@gmail.com"
 PROJECT_DIR="/root/Buildable"
 
@@ -28,7 +28,7 @@ events {
 http {
     server {
         listen 80;
-        server_name buildable.bihanbanerjee.com;
+        server_name api.buildable.bihanbanerjee.com;
 
         location /.well-known/acme-challenge/ {
             root /var/www/certbot;
