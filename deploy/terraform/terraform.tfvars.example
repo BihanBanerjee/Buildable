@@ -1,0 +1,7 @@
+# Copy this file to terraform.tfvars and fill in your values
+# cp terraform.tfvars.example terraform.tfvars
+
+do_token             = "dop_v1_your_token_here"
+domain               = "api.buildable.dev"
+region               = "blr1"
+ssh_key_fingerprint  = "xx:xx:xx:xx:xx:xx:xx:xx:xx:xx:xx:xx:xx:xx:xx:xx"

@@ -29,8 +29,12 @@ app = FastAPI(title="Buildable")
 
 origins = [
     "http://localhost:3000",
-    # "https://webbuilder.elevenai.xyz",
 ]
+
+# Add production frontend URL from env (e.g. https://buildable.vercel.app)
+_prod_origin = os.getenv("FRONTEND_URL")
+if _prod_origin:
+    origins.append(_prod_origin)
 
 app.add_middleware(
     CORSMiddleware,

@@ -1,0 +1,13 @@
+frontend/
+.venv/
+.git/
+.claude/
+projects/
+__pycache__/
+*.pyc
+.env
+.env.*
+node_modules/
+*.md
+deploy/
+.gitignore

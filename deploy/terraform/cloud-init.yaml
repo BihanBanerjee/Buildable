@@ -1,0 +1,54 @@
+#cloud-config
+
+package_update: true
+package_upgrade: true
+
+packages:
+  - docker.io
+  - docker-compose-v2
+  - nginx
+  - certbot
+  - python3-certbot-nginx
+  - curl
+
+runcmd:
+  # Enable Docker
+  - systemctl enable docker
+  - systemctl start docker
+
+  # Create app directory
+  - mkdir -p /opt/buildable
+
+  # Write Nginx config
+  - |
+    cat > /etc/nginx/sites-available/buildable << 'NGINXEOF'
+    server {
+        listen 80;
+        server_name ${domain};
+
+        location / {
+            proxy_pass http://127.0.0.1:8000;
+            proxy_http_version 1.1;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+
+            # SSE support — disable buffering for streaming responses
+            proxy_buffering off;
+            proxy_cache off;
+            proxy_set_header Connection '';
+            chunked_transfer_encoding off;
+            proxy_read_timeout 300s;
+        }
+    }
+    NGINXEOF
+
+  # Enable the site, disable default
+  - ln -sf /etc/nginx/sites-available/buildable /etc/nginx/sites-enabled/buildable
+  - rm -f /etc/nginx/sites-enabled/default
+  - nginx -t && systemctl restart nginx
+  - systemctl enable nginx
+
+  # SSL will be set up after DNS is pointed to this server:
+  # certbot --nginx -d ${domain} --non-interactive --agree-tos -m your@email.com

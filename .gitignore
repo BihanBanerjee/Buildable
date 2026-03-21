@@ -22,3 +22,13 @@ BuildingPlan.md
 # Logs
 *.log
 projects/
+
+# Terraform
+deploy/terraform/.terraform/
+deploy/terraform/*.tfstate
+deploy/terraform/*.tfstate.backup
+deploy/terraform/.terraform.lock.hcl
+deploy/terraform/terraform.tfvars
+
+# Production env
+deploy/.env.production
