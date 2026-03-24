@@ -12,7 +12,7 @@ def _sanitize_project_name(name: str) -> str:
     """Sanitize project name for Cloudflare Pages (lowercase, alphanumeric + dashes, max 58 chars)."""
     safe = re.sub(r"[^a-z0-9-]", "-", name.lower())
     safe = re.sub(r"-+", "-", safe).strip("-")
-    return safe[:58] or "buildable-app"
+    return safe[:58].strip("-") or "buildable-app"
 
 
 async def deploy_to_cloudflare(sandbox: AsyncSandbox, project_name: str) -> dict:
