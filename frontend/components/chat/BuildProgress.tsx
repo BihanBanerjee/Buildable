@@ -1,4 +1,5 @@
-import { Loader2, CheckCircle2, Circle } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Loader2, CheckCircle2, Circle, Clock } from "lucide-react";
 import type { BuildStage } from "@/lib/chat-types";
 
 interface BuildProgressProps {
@@ -17,6 +18,28 @@ function getStageIndex(stage: BuildStage | null): number {
   if (!stage) return -1;
   if (stage === "completed") return STAGES.length;
   return STAGES.findIndex((s) => s.key === stage);
+}
+
+function StageTimer() {
+  const startRef = useRef(Date.now());
+  const [elapsed, setElapsed] = useState(0);
+
+  useEffect(() => {
+    const id = setInterval(
+      () => setElapsed(Math.floor((Date.now() - startRef.current) / 1000)),
+      1000,
+    );
+    return () => clearInterval(id);
+  }, []);
+
+  if (elapsed < 2) return null;
+
+  return (
+    <span className="inline-flex items-center gap-1 text-xs text-muted-foreground tabular-nums ml-1">
+      <Clock size={10} className="shrink-0" />
+      {elapsed}s
+    </span>
+  );
 }
 
 export function BuildProgress({ currentStage }: BuildProgressProps) {
@@ -58,6 +81,7 @@ export function BuildProgress({ currentStage }: BuildProgressProps) {
               >
                 {stage.label}
               </span>
+              {isActive && <StageTimer />}
             </div>
 
             {/* Connector line */}

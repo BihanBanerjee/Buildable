@@ -1,5 +1,5 @@
-import { Eye, FileCode, Globe, ExternalLink, RefreshCw } from "lucide-react";
-import { useState } from "react";
+import { Eye, FileCode, Globe, ExternalLink, RefreshCw, Loader2 } from "lucide-react";
+import { useState, useCallback } from "react";
 import { FileViewer } from "./FileViewer";
 
 interface PreviewPanelProps {
@@ -11,6 +11,7 @@ interface PreviewPanelProps {
   sandboxActive: boolean;
   isRestartingSandbox: boolean;
   onRestartSandbox: () => void;
+  isLoadingFiles?: boolean;
 }
 
 type TabType = "preview" | "files";
@@ -24,8 +25,12 @@ export function PreviewPanel({
   sandboxActive,
   isRestartingSandbox,
   onRestartSandbox,
+  isLoadingFiles = false,
 }: PreviewPanelProps) {
   const [activeTab, setActiveTab] = useState<TabType>("preview");
+  const [iframeLoaded, setIframeLoaded] = useState(false);
+
+  const handleIframeLoad = useCallback(() => setIframeLoaded(true), []);
 
   return (
     <div
@@ -116,12 +121,21 @@ export function PreviewPanel({
                 </div>
               </div>
             ) : appUrl ? (
-              <div className="w-full h-full rounded-xl overflow-hidden border border-border">
+              <div className="w-full h-full rounded-xl overflow-hidden border border-border relative">
+                {!iframeLoaded && (
+                  <div className="absolute inset-0 flex items-center justify-center bg-background z-10">
+                    <div className="text-center">
+                      <Loader2 className="w-6 h-6 animate-spin text-primary mx-auto mb-3" />
+                      <p className="text-muted-foreground text-sm">Loading preview...</p>
+                    </div>
+                  </div>
+                )}
                 <iframe
                   src={appUrl}
                   title="App Preview"
                   className="w-full h-full"
                   sandbox="allow-same-origin allow-scripts allow-forms allow-popups allow-modals"
+                  onLoad={handleIframeLoad}
                 />
               </div>
             ) : (
@@ -137,6 +151,11 @@ export function PreviewPanel({
                 </div>
               </div>
             )}
+          </div>
+        ) : isLoadingFiles ? (
+          <div className="flex flex-col items-center justify-center h-full text-muted-foreground">
+            <Loader2 className="w-6 h-6 animate-spin mb-3" />
+            <p className="text-sm">Loading files...</p>
           </div>
         ) : (
           <FileViewer files={files} projectId={projectId} />

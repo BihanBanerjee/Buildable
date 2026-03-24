@@ -40,6 +40,7 @@ export default function ChatIdPage() {
   const [isSending, setIsSending] = useState(false);
   const [buildStage, setBuildStage] = useState<BuildStage | null>(null);
   const [deployedUrl, setDeployedUrl] = useState<string | null>(null);
+  const [isLoadingFiles, setIsLoadingFiles] = useState(false);
 
   const eventSourceRef = useRef<EventSource | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -67,6 +68,7 @@ export default function ChatIdPage() {
       const token = localStorage.getItem("auth_token");
       if (!token) return;
 
+      setIsLoadingFiles(true);
       const response = await apiClient.get<{
         project_id: string;
         files: string[];
@@ -78,6 +80,8 @@ export default function ChatIdPage() {
       setSandboxActive(response.data.sandbox_active ?? true);
     } catch (error) {
       console.error("Error fetching files:", error);
+    } finally {
+      setIsLoadingFiles(false);
     }
   };
 
@@ -397,6 +401,7 @@ export default function ChatIdPage() {
               sandboxActive={sandboxActive}
               isRestartingSandbox={isRestartingSandbox}
               onRestartSandbox={restartSandbox}
+              isLoadingFiles={isLoadingFiles}
             />
           )}
         </div>

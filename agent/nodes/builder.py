@@ -271,7 +271,7 @@ async def builder_node(state: GraphState, config: RunnableConfig) -> dict:
             }
 
         # Emit build summary
-        summary = generate_build_summary(files_tracker, [], plan)
+        summary = generate_build_summary(files_tracker, [], plan or {})
         safe_send_event(event_queue, {"e": "summary", "message": summary})
         safe_send_event(event_queue, {"e": "builder_complete", "message": "Build phase complete"})
 

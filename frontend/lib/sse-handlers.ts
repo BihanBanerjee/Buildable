@@ -381,9 +381,63 @@ export function handleSSEMessage(event: MessageEvent, handlers: SSEHandlers) {
       return;
     }
 
+    if (data.e === "file_created" || data.e === "file_edited") {
+      const fileMsg = (data.message as string) || "";
+      if (!fileMsg) return;
+
+      handlers.setMessages((prev) => {
+        const lastMsg = prev[prev.length - 1];
+        if (lastMsg?.role === "assistant" && lastMsg.event_type === "file_activity") {
+          const existing = lastMsg.content || "";
+          return [
+            ...prev.slice(0, -1),
+            { ...lastMsg, content: existing + "\n" + fileMsg },
+          ];
+        }
+        return [
+          ...prev,
+          {
+            id: Date.now().toString() + "-file",
+            role: "assistant" as const,
+            content: fileMsg,
+            created_at: new Date().toISOString(),
+            event_type: "file_activity",
+          },
+        ];
+      });
+      return;
+    }
+
+    if (data.e === "files_created") {
+      const fileMsg = (data.message as string) || "";
+      if (!fileMsg) return;
+
+      handlers.setMessages((prev) => {
+        const lastMsg = prev[prev.length - 1];
+        if (lastMsg?.role === "assistant" && lastMsg.event_type === "file_activity") {
+          return [
+            ...prev.slice(0, -1),
+            { ...lastMsg, content: fileMsg },
+          ];
+        }
+        return [
+          ...prev,
+          {
+            id: Date.now().toString() + "-files",
+            role: "assistant" as const,
+            content: fileMsg,
+            created_at: new Date().toISOString(),
+            event_type: "file_activity",
+          },
+        ];
+      });
+      return;
+    }
+
     if (data.e === "planner_complete") {
       const plan = data.content || data.plan;
       let title = "Planning complete";
+      let details = "";
 
       if (plan && typeof plan === "object") {
         const overview =
@@ -399,19 +453,37 @@ export function handleSSEMessage(event: MessageEvent, handlers: SSEHandlers) {
         } else if ((plan as any).title) {
           title = String((plan as any).title).substring(0, 150);
         }
+
+        const components = (plan as any).components as string[] | undefined;
+        const pages = (plan as any).pages as string[] | undefined;
+        const deps = (plan as any).dependencies as string[] | undefined;
+
+        const parts: string[] = [];
+        if (pages?.length) parts.push(`${pages.length} page${pages.length > 1 ? "s" : ""}`);
+        if (components?.length) parts.push(`${components.length} components`);
+        if (deps?.length) parts.push(`${deps.length} dependencies`);
+
+        if (parts.length > 0) {
+          details = parts.join(" · ");
+        }
+        if (components?.length) {
+          details += "\n" + components.join(", ");
+        }
       }
+
+      const content = details ? `${title}\n${details}` : title;
 
       handlers.setMessages((prev) => {
         const lastMsg = prev[prev.length - 1];
         if (lastMsg?.role === "assistant") {
-          return [...prev.slice(0, -1), { ...lastMsg, content: title }];
+          return [...prev.slice(0, -1), { ...lastMsg, content }];
         }
         return [
           ...prev,
           {
             id: Date.now().toString() + "-plan",
             role: "assistant" as const,
-            content: title,
+            content,
             created_at: new Date().toISOString(),
             event_type: "planner_complete",
           },

@@ -132,9 +132,15 @@ async def stream_agent_events(
     thinking_sent = False
     tool_log: list[dict] = []
 
-    # Background progress ticker
-    stop_ticker = asyncio.Event()
-    ticker_task = asyncio.create_task(_progress_ticker(event_queue, stop_ticker))
+    # Single shared stop event — all tickers check this
+    master_stop = asyncio.Event()
+    ticker_tasks: list[asyncio.Task] = []
+
+    def _start_ticker():
+        task = asyncio.create_task(_progress_ticker(event_queue, master_stop))
+        ticker_tasks.append(task)
+
+    _start_ticker()
 
     try:
         async for event in agent_executor.astream_events(
@@ -158,9 +164,8 @@ async def stream_agent_events(
                 continue
 
             if kind == "on_tool_start":
-                stop_ticker.set()
                 tool_name = event.get("name")
-                tool_input = event.get("data", {}).get("input", {})
+                tool_input = (event.get("data") or {}).get("input", {})
                 safe_send_event(event_queue, {
                     "e": "tool_started",
                     "tool_name": tool_name,
@@ -169,7 +174,7 @@ async def stream_agent_events(
 
             elif kind == "on_tool_end":
                 tool_name = event.get("name")
-                tool_output = event.get("data", {}).get("output")
+                tool_output = (event.get("data") or {}).get("output")
 
                 if hasattr(tool_output, "content"):
                     tool_output = tool_output.content
@@ -184,17 +189,16 @@ async def stream_agent_events(
 
                 tool_log.append({"name": tool_name, "status": "success", "output": tool_output[:150]})
 
-                # Restart ticker for next tool call generation gap
-                stop_ticker = asyncio.Event()
-                ticker_task = asyncio.create_task(_progress_ticker(event_queue, stop_ticker))
-
     finally:
-        stop_ticker.set()
-        ticker_task.cancel()
-        try:
-            await ticker_task
-        except asyncio.CancelledError:
-            pass
+        # Stop all tickers
+        master_stop.set()
+        for task in ticker_tasks:
+            task.cancel()
+        for task in ticker_tasks:
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
 
     # Flush all tool calls as ONE DB row
     if tool_log:
