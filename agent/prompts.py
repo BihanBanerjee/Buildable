@@ -50,6 +50,8 @@ SIMPLICITY RULES:
 - Keep dependencies MINIMAL — every extra package slows down the build
 - Target 8-15 files maximum. If you're planning 20+ files, you're over-engineering
 - IMPORTANT: The app uses React 18. Avoid react-beautiful-dnd (use @hello-pangea/dnd or @dnd-kit/core instead).
+- NEVER suggest API-specific client SDKs (e.g. @spoonacular/..., @openweather/...) — they often don't exist on npm. Use axios or fetch with the public API directly instead.
+- Only suggest well-known, popular npm packages (axios, date-fns, recharts, @hello-pangea/dnd, framer-motion, etc.). When in doubt, leave it out.
 
 Output a JSON object with exactly these keys:
 - "overview": 1-2 sentence description of the app
@@ -68,12 +70,11 @@ BASE FILES (DO NOT MODIFY THESE — they are locked):
 - package.json, vite.config.js, tailwind.config.js, postcss.config.js, index.html, src/main.jsx, src/index.css
 
 ALREADY SET UP:
-- App.jsx with routes (BrowserRouter + Routes)
 - npm dependencies installed
 - Tailwind CSS v3 with HSL design tokens in index.css (--background, --foreground, --primary, --accent, etc.)
 - Custom colors in tailwind.config.js: bg-background, text-foreground, bg-primary, text-muted, border-border, shadow-elegant, shadow-glow
 
-CRITICAL: Use write_multiple_files with EVERY file in ONE call. No placeholders, no partial code.
+CRITICAL RULE: Call write_multiple_files ONCE with EVERY file — including src/App.jsx. No placeholders, no partial code, no second tool call.
 
 WEB SEARCH (if available):
 When the prompt asks for a landing page, company page, or topic-specific content, call web_search FIRST:
@@ -81,8 +82,35 @@ When the prompt asks for a landing page, company page, or topic-specific content
 - Extract: real name, tagline, features, pricing, brand colors, CTAs
 - Then use the real data in your code — NO fake company names, NO placeholder text
 
-YOUR JOB: Create component files, page files, hooks, context, and utilities.
-You MAY also call create_file to overwrite App.jsx if you need context providers or layout wrappers.
+YOUR JOB: Create ALL files in ONE write_multiple_files call:
+- src/App.jsx (with BrowserRouter, Routes, and ALL context providers wrapping the routes)
+- Component files (src/components/*.jsx)
+- Page files (src/pages/*.jsx)
+- Context files (src/context/*.jsx) — export Provider + named hook
+- Hook files (src/hooks/*.js)
+- Utility files (src/utils/*.js)
+
+CONTEXT PROVIDERS — CRITICAL:
+If you create a context file (e.g. RecipeContext.jsx), you MUST wrap <Routes> with the Provider in App.jsx.
+Example App.jsx structure:
+```
+import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import { RecipeProvider } from './context/RecipeContext';
+// ... page imports
+
+export default function App() {
+  return (
+    <BrowserRouter>
+      <RecipeProvider>
+        <Routes>
+          <Route path="/" element={<Home />} />
+          ...
+        </Routes>
+      </RecipeProvider>
+    </BrowserRouter>
+  );
+}
+```
 
 ENVIRONMENT:
 - React 18 + Vite + Tailwind CSS v3 + react-router-dom + lucide-react + clsx + tailwind-merge
@@ -93,7 +121,7 @@ FILE RULES:
 - Pages: flat in src/pages/
 - Pages import with '../': `import X from '../components/X'`
 - Components import siblings with './': `import Y from './Y'`
-- Context files: export Provider + named hook
+- Context files: export Provider + named hook. `export const useX = () => useContext(XContext)`
 - export default for all components and pages
 - Every import must match a real file you are creating
 - Use Tailwind utility classes for all styling (bg-blue-600, text-white, etc.)
@@ -101,11 +129,11 @@ FILE RULES:
 
 STRATEGY:
 1. If the prompt mentions a real company/topic, call web_search first
-2. Call write_multiple_files with ALL component, page, context, and utility files in ONE call
-3. If you need context providers wrapping routes, also call create_file to overwrite App.jsx
-4. Write complete, production-quality code — NO placeholders, NO "TODO", NO "Lorem ipsum"
+2. Call write_multiple_files with ALL files in ONE call — including App.jsx with providers
+3. Write complete, production-quality code — NO placeholders, NO "TODO", NO "Lorem ipsum"
 
 PRE-FLIGHT CHECK (do this mentally before calling the tool):
+- App.jsx is included in write_multiple_files and wraps routes with ALL context providers
 - Every useContext hook has its Provider wrapping the component tree in App.jsx
 - Every import path matches an actual file you are creating
 - Every component and page has export default
@@ -253,17 +281,19 @@ def get_builder_prompt(plan: dict, is_first_message: bool = True) -> str:
         return f"""PLAN: {compact_plan}
 
 ALREADY DONE BY SCAFFOLD:
-- App.jsx has routes for: {', '.join(pages)}
 - Installed packages: {', '.join(deps) if deps else 'none'}
 - index.css has Tailwind configured
+- Pages planned: {', '.join(pages)}
 
-YOUR JOB:
-1. Create ALL component and page files using write_multiple_files in ONE call.
-2. Then use create_file to overwrite App.jsx if you need to wrap routes with context providers or layout wrappers.
-3. Overwrite Home.jsx with actual content using create_file if needed.
+YOUR JOB: Call write_multiple_files ONCE with ALL files including src/App.jsx.
+
+App.jsx MUST include:
+- BrowserRouter + Routes with a Route for each page
+- ALL context providers wrapping the Routes (if you create any context files)
+- Navigation component if planned
 
 Do NOT touch main.jsx or index.css. Do NOT run npm install.
-Build EVERY component and page file. Do not stop early."""
+Build EVERY file in ONE write_multiple_files call. Do not stop early."""
     else:
         user_prompt = plan.get("_user_prompt", "") if plan else ""
         return f"""USER REQUEST: {user_prompt or compact_plan}

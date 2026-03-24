@@ -1,8 +1,8 @@
 """
 Node 2: SCAFFOLD — deterministic setup (no LLM).
 
-Writes base template files, installs deps, generates App.jsx with routes, creates page stubs.
-On follow-ups where the plan introduces new pages, auto-updates App.jsx routes.
+Writes base template files and installs npm dependencies.
+App.jsx, pages, and components are created by the builder node.
 """
 
 import asyncio
@@ -16,177 +16,27 @@ from .helpers import safe_send_event, NodeTimer
 
 
 # ─────────────────────────────────────────────────────────────
-# Helpers
-# ─────────────────────────────────────────────────────────────
-
-def _page_name_to_route(page_name: str, index: int) -> str:
-    """Convert a page name to a URL route. First page is always /."""
-    if index == 0:
-        return "/"
-    route = page_name[0].lower()
-    for ch in page_name[1:]:
-        if ch.isupper():
-            route += f"-{ch.lower()}"
-        else:
-            route += ch
-    return f"/{route}"
-
-
-def _generate_app_jsx(pages: list[str], components: list[str]) -> str:
-    """Generate App.jsx with routes from the plan."""
-    if not pages:
-        pages = ["Home"]
-
-    imports = [
-        "import { BrowserRouter, Routes, Route } from 'react-router-dom'",
-    ]
-    for page in pages:
-        imports.append(f"import {page} from './pages/{page}'")
-
-    routes = []
-    for i, page in enumerate(pages):
-        route_path = _page_name_to_route(page, i)
-        routes.append(f'        <Route path="{route_path}" element={{<{page} />}} />')
-
-    nav_section = ""
-    if len(pages) > 1:
-        nav_links = []
-        for i, page in enumerate(pages):
-            route_path = _page_name_to_route(page, i)
-            label = page.replace("Page", "")
-            nav_links.append(
-                f'            <a href="{route_path}" className="px-4 py-2 text-sm font-medium text-gray-300 hover:text-white hover:bg-gray-700 rounded-lg transition-colors">{label}</a>'
-            )
-        nav_section = f"""
-      <nav className="bg-gray-900 border-b border-gray-800">
-        <div className="max-w-7xl mx-auto px-4 py-3 flex items-center gap-2">
-          <span className="text-white font-bold text-lg mr-4">App</span>
-{chr(10).join(nav_links)}
-        </div>
-      </nav>"""
-
-    return f"""import React from 'react'
-{chr(10).join(imports)}
-
-export default function App() {{
-  return (
-    <BrowserRouter>{nav_section}
-      <Routes>
-{chr(10).join(routes)}
-      </Routes>
-    </BrowserRouter>
-  )
-}}
-"""
-
-
-
-# ─────────────────────────────────────────────────────────────
-# Follow-up scaffold: detect & register new pages
-# ─────────────────────────────────────────────────────────────
-
-async def _update_routes_for_new_pages(sandbox, plan: dict, event_queue) -> list[str]:
-    """If the plan introduces pages not yet in App.jsx, regenerate routes.
-
-    Returns list of newly-created stub page files.
-    """
-    path = "/home/user/react-app"
-    new_files: list[str] = []
-
-    try:
-        # Read current App.jsx to find existing page imports
-        current_app = await sandbox.files.read(f"{path}/src/App.jsx")
-    except Exception:
-        # No App.jsx — nothing to update
-        return new_files
-
-    planned_pages = plan.get("pages", [])
-    if not planned_pages:
-        return new_files
-
-    # Detect which pages are already imported
-    existing_pages: set[str] = set()
-    for line in current_app.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("import ") and "./pages/" in stripped:
-            # e.g. import Settings from './pages/Settings'
-            parts = stripped.split()
-            if len(parts) >= 2:
-                existing_pages.add(parts[1])
-
-    new_pages = [p for p in planned_pages if p not in existing_pages]
-    if not new_pages:
-        return new_files
-
-    print(f"Scaffold follow-up: adding {len(new_pages)} new page(s): {new_pages}")
-
-    # Preserve original ordering: existing first (in their order), then new
-    # We'll just regenerate with all planned pages since the plan is authoritative
-    components = plan.get("components", [])
-    app_jsx = _generate_app_jsx(planned_pages, components)
-    await sandbox.files.write(f"{path}/src/App.jsx", app_jsx)
-
-    safe_send_event(event_queue, {
-        "e": "tool_completed",
-        "tool_name": "scaffold",
-        "tool_output": f"Updated App.jsx routes: added {', '.join(new_pages)}",
-    })
-
-    # Create stub files for new pages so imports don't break
-    for page in new_pages:
-        page_content = f"""import React from 'react'
-
-export default function {page}() {{
-  return (
-    <div className="min-h-screen bg-gray-50 p-8">
-      <h1 className="text-3xl font-bold text-gray-900">{page}</h1>
-    </div>
-  )
-}}
-"""
-        try:
-            # Only write if file doesn't exist yet
-            await sandbox.files.read(f"{path}/src/pages/{page}.jsx")
-        except Exception:
-            await sandbox.files.write(f"{path}/src/pages/{page}.jsx", page_content)
-            new_files.append(f"src/pages/{page}.jsx")
-
-    return new_files
-
-
-# ─────────────────────────────────────────────────────────────
 # Node entry point
 # ─────────────────────────────────────────────────────────────
 
 async def scaffold_node(state: GraphState, config: RunnableConfig) -> dict:
-    """Deterministic scaffolding — install deps, generate App.jsx with routes, set up index.css.
+    """Deterministic scaffolding — write base template files and install deps.
 
     Zero LLM tokens. Runs in ~10s (mostly npm install).
-    On follow-ups: detects new pages from plan and auto-updates App.jsx routes.
+    App.jsx, pages, and components are created by the builder node.
     """
     timer = NodeTimer("scaffold")
     configurable = config.get("configurable", {})
     event_queue = configurable.get("event_queue")
     sandbox = configurable.get("sandbox")
 
-    # ── Follow-up path: update routes if new pages, then hand off ──
+    # ── Follow-up path: skip scaffold, hand off to builder ──
     if not state.get("is_first_message", True):
-        plan = state.get("plan", {})
-        new_page_files = []
-
-        if sandbox and plan.get("pages"):
-            try:
-                new_page_files = await _update_routes_for_new_pages(sandbox, plan, event_queue)
-                if new_page_files:
-                    print(f"Scaffold follow-up: created {len(new_page_files)} new page stubs")
-            except Exception as e:
-                print(f"Scaffold follow-up route update failed (non-fatal): {e}")
-
         safe_send_event(event_queue, {"e": "builder_started", "message": "Generating code for your application..."})
-        log_entry = timer.stop(status="skipped (follow-up)" if not new_page_files else "completed (route update)")
+        log_entry = timer.stop(status="skipped (follow-up)")
         return {
             "scaffold_complete": True,
-            "files_created": new_page_files,
+            "files_created": [],
             "current_node": "scaffold",
             "execution_log": [log_entry],
         }
@@ -197,8 +47,6 @@ async def scaffold_node(state: GraphState, config: RunnableConfig) -> dict:
             raise Exception("Sandbox not available")
 
         plan = state.get("plan", {})
-        pages = plan.get("pages", ["Home"])
-        components = plan.get("components", [])
         dependencies = plan.get("dependencies", [])
         path = "/home/user/react-app"
         files_created = []
@@ -220,7 +68,7 @@ async def scaffold_node(state: GraphState, config: RunnableConfig) -> dict:
             "tool_output": f"Wrote {len(BASE_TEMPLATE)} base template files",
         })
 
-        # Step 2: Install plan dependencies (with --legacy-peer-deps fallback for React 19 compat)
+        # Step 2: Install plan dependencies (with --legacy-peer-deps fallback)
         # npm install from base template package.json first
         safe_send_event(event_queue, {
             "e": "tool_started",
@@ -239,25 +87,19 @@ async def scaffold_node(state: GraphState, config: RunnableConfig) -> dict:
             except Exception as e:
                 print(f"Scaffold base npm install failed: {e}")
 
-        # Install extra plan dependencies
-        if dependencies:
-            dep_str = " ".join(dependencies)
+        # Install extra plan dependencies one-by-one so a bad package doesn't block others
+        for dep in dependencies:
             try:
-                result = await sandbox.commands.run(f"npm install {dep_str}", cwd=path, timeout=120)
-                install_ok = result.exit_code == 0
-            except Exception as install_err:
-                print(f"Scaffold npm install failed, retrying with --legacy-peer-deps: {str(install_err)[:200]}")
-                install_ok = False
-
-            if not install_ok:
-                try:
-                    result = await sandbox.commands.run(
-                        f"npm install --legacy-peer-deps {dep_str}", cwd=path, timeout=120
-                    )
-                    install_ok = True
-                    print("Scaffold npm install succeeded with --legacy-peer-deps")
-                except Exception as retry_err:
-                    print(f"Scaffold npm install failed even with --legacy-peer-deps: {str(retry_err)[:200]}")
+                result = await sandbox.commands.run(f"npm install {dep}", cwd=path, timeout=60)
+                if result.exit_code != 0:
+                    # Retry with --legacy-peer-deps
+                    result = await sandbox.commands.run(f"npm install --legacy-peer-deps {dep}", cwd=path, timeout=60)
+                    if result.exit_code != 0:
+                        print(f"Scaffold: failed to install {dep} (skipping)")
+                    else:
+                        print(f"Scaffold: installed {dep} with --legacy-peer-deps")
+            except Exception as e:
+                print(f"Scaffold: failed to install {dep}: {str(e)[:100]} (skipping)")
 
         safe_send_event(event_queue, {
             "e": "tool_completed",
@@ -265,39 +107,9 @@ async def scaffold_node(state: GraphState, config: RunnableConfig) -> dict:
             "tool_output": "Dependencies installed",
         })
 
-        # Step 3: Determine page structure
-        if len(pages) == 1 and pages[0] != "Home":
-            effective_pages = pages
-        else:
-            if "Home" not in pages:
-                effective_pages = ["Home"] + pages
-            else:
-                effective_pages = pages
-
-        # Step 4: Generate and write App.jsx (routes)
-        app_jsx_content = _generate_app_jsx(effective_pages, components)
-        await sandbox.files.write(f"{path}/src/App.jsx", app_jsx_content)
-        files_created.append("src/App.jsx")
-        safe_send_event(event_queue, {"e": "file_created", "message": "Created src/App.jsx"})
-
-        # Step 5: Create placeholder page stubs so imports don't break
-        for page in effective_pages:
-            if page == "Home" and len(pages) == 1 and pages[0] != "Home":
-                continue
-            page_content = f"""import React from 'react'
-
-export default function {page}() {{
-  return (
-    <div className="min-h-screen bg-gray-50 p-8">
-      <h1 className="text-3xl font-bold text-gray-900">{page}</h1>
-    </div>
-  )
-}}
-"""
-            await sandbox.files.write(f"{path}/src/pages/{page}.jsx", page_content)
-            files_created.append(f"src/pages/{page}.jsx")
-
-        print(f"Scaffold complete: {len(files_created)} files, {len(dependencies)} deps")
+        # App.jsx, pages, and components are created by the builder (not scaffold).
+        # The builder includes App.jsx with context providers in its write_multiple_files call.
+        print(f"Scaffold complete: {len(files_created)} base files, {len(dependencies)} deps")
 
         log_entry = timer.stop(files=files_created)
         return {

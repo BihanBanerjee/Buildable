@@ -110,13 +110,29 @@ async def app_start_node(state: GraphState, config: RunnableConfig) -> dict:
         if missing_files:
             runtime_errors.append(f"Missing essential files: {', '.join(missing_files)}")
         else:
-            # Check if Vite is listening on port 5173
+            # Determine if we need a fresh Vite restart.
+            # After fixer runs, we must restart Vite to clear stale error logs.
+            fixer_ran = state.get("fixer_retries", 0) > 0
+
             port_check = await sandbox.commands.run(
                 "ss -tlnp 2>/dev/null | grep -q ':5173' && echo 'port_open' || echo 'port_closed'",
                 cwd=path,
             )
-            if "port_closed" in port_check.stdout:
-                print("App start: Port 5173 not listening — restarting Vite")
+            port_open = "port_open" in port_check.stdout
+
+            need_restart = not port_open or fixer_ran
+
+            if need_restart:
+                if port_open:
+                    # Kill existing Vite so we get fresh logs
+                    await sandbox.commands.run("pkill -f 'vite' || true", cwd=path, timeout=5)
+                    await asyncio.sleep(1)
+                    print("App start: Killed existing Vite to get fresh logs after fixer")
+                else:
+                    print("App start: Port 5173 not listening")
+
+                # Clear old logs and start fresh
+                await sandbox.commands.run("rm -f /tmp/vite.log", cwd=path, timeout=5)
                 await sandbox.commands.run(
                     "nohup npm run dev -- --host 0.0.0.0 > /tmp/vite.log 2>&1 &",
                     cwd=path,
@@ -133,7 +149,7 @@ async def app_start_node(state: GraphState, config: RunnableConfig) -> dict:
                 else:
                     print("App start: Vite did not start within 30s")
             else:
-                print("App start: Port 5173 already open")
+                print("App start: Port 5173 already open (no fixer ran, keeping existing)")
 
             # Verify HTTP response
             vite_result = await sandbox.commands.run(
