@@ -39,6 +39,7 @@ export default function ChatIdPage() {
   const [isRestartingSandbox, setIsRestartingSandbox] = useState(false);
   const [isSending, setIsSending] = useState(false);
   const [buildStage, setBuildStage] = useState<BuildStage | null>(null);
+  const [deployedUrl, setDeployedUrl] = useState<string | null>(null);
 
   const eventSourceRef = useRef<EventSource | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -314,6 +315,10 @@ export default function ChatIdPage() {
           onNewChat={() => router.push("/chat")}
           onBack={() => router.push("/chat")}
           onUserDataUpdate={setUserData}
+          projectId={chatId}
+          appUrl={appUrl}
+          deployedUrl={deployedUrl}
+          onDeployedUrl={setDeployedUrl}
         />
 
         {/* Main split layout */}

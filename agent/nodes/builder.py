@@ -14,7 +14,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.prebuilt import create_react_agent
 
 from ..graph_state import GraphState
-from ..agent import create_llm
+from ..agent import create_llm, get_fast_model
 from ..tools import create_tools
 from ..prompts import (
     BUILDER_SYSTEM_FIRST,
@@ -183,7 +183,9 @@ async def builder_node(state: GraphState, config: RunnableConfig) -> dict:
             mode=tool_mode,
         )
 
-        builder_llm = create_llm(api_key, builder_model, max_tokens=16000)
+        # Use the cheaper fast model for follow-up edits (e.g. Flash/Haiku)
+        effective_model = get_fast_model(builder_model) if not is_first_message else builder_model
+        builder_llm = create_llm(api_key, effective_model, max_tokens=16000)
 
         # Build the user message
         if not is_first_message:

@@ -22,6 +22,15 @@ export const chatApi = {
     await apiClient.delete(`/projects/${projectId}`);
   },
 
+  deployProject: async (
+    projectId: string,
+  ): Promise<{ success: boolean; url: string }> => {
+    const response = await apiClient.post<{ success: boolean; url: string }>(
+      `/projects/${projectId}/deploy`,
+    );
+    return response.data;
+  },
+
   checkUrlHealth: async (url: string): Promise<boolean> => {
     try {
       const response = await apiClient.head(url, { timeout: 5000 });
