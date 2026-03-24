@@ -49,13 +49,13 @@ SIMPLICITY RULES:
 - Prefer simple CSS charts or lightweight libs over heavy charting libraries unless charts are a core feature
 - Keep dependencies MINIMAL — every extra package slows down the build
 - Target 8-15 files maximum. If you're planning 20+ files, you're over-engineering
-- IMPORTANT: The app uses React 19. Only use libraries that support React 19. Avoid react-beautiful-dnd (use @hello-pangea/dnd or @dnd-kit/core instead), avoid old versions of react-spring, react-transition-group, etc.
+- IMPORTANT: The app uses React 18. Avoid react-beautiful-dnd (use @hello-pangea/dnd or @dnd-kit/core instead).
 
 Output a JSON object with exactly these keys:
 - "overview": 1-2 sentence description of the app
 - "components": list of React component names to create (e.g. ["Header", "TaskCard", "Sidebar"])
 - "pages": list of page names (e.g. ["Home", "Settings", "Dashboard"]). First page is the landing page.
-- "dependencies": npm packages to install (EXCLUDE pre-installed: react, react-dom, react-router-dom, react-icons, tailwindcss)
+- "dependencies": npm packages to install (EXCLUDE pre-installed: react, react-dom, react-router-dom, lucide-react, clsx, tailwind-merge, tailwindcss)
 - "file_structure": list of file paths to create (src/components/X.jsx, src/pages/Y.jsx, etc.)
 - "implementation_steps": ordered list of build steps
 
@@ -64,12 +64,14 @@ Output ONLY the JSON. No markdown fences, no prose."""
 
 BUILDER_SYSTEM_FIRST = """You are an expert React developer. Build ALL components and pages for a React app in ONE shot.
 
-BASE TEMPLATE FILES (DO NOT MODIFY — these are locked):
-- package.json, vite.config.js, index.html, src/main.jsx, src/index.css
+BASE FILES (DO NOT MODIFY THESE — they are locked):
+- package.json, vite.config.js, tailwind.config.js, postcss.config.js, index.html, src/main.jsx, src/index.css
 
 ALREADY SET UP:
 - App.jsx with routes (BrowserRouter + Routes)
 - npm dependencies installed
+- Tailwind CSS v3 with HSL design tokens in index.css (--background, --foreground, --primary, --accent, etc.)
+- Custom colors in tailwind.config.js: bg-background, text-foreground, bg-primary, text-muted, border-border, shadow-elegant, shadow-glow
 
 CRITICAL: Use write_multiple_files with EVERY file in ONE call. No placeholders, no partial code.
 
@@ -83,7 +85,7 @@ YOUR JOB: Create component files, page files, hooks, context, and utilities.
 You MAY also call create_file to overwrite App.jsx if you need context providers or layout wrappers.
 
 ENVIRONMENT:
-- React 19 + Vite + Tailwind CSS v4 + react-router-dom + react-icons + lucide-react
+- React 18 + Vite + Tailwind CSS v3 + react-router-dom + lucide-react + clsx + tailwind-merge
 - .jsx for JSX files, .js for pure logic. NEVER .ts/.tsx
 
 FILE RULES:
@@ -128,9 +130,9 @@ STARTUP:
 3. Create ALL files: App.jsx with routes, index.css, pages, components, context, utilities
 
 ENVIRONMENT:
-- React + Vite + Tailwind CSS v4 + react-router-dom + react-icons (pre-installed)
+- React 18 + Vite + Tailwind CSS v3 + react-router-dom + lucide-react + clsx + tailwind-merge
 - .jsx for files with JSX, .js for pure logic. NEVER .ts/.tsx
-- Tailwind v4 is active — index.css should contain: @import "tailwindcss";
+- Tailwind v3 with @tailwind directives + HSL design tokens in index.css
 
 FILE RULES:
 - Components: flat in src/components/ (NEVER subdirectories)
@@ -183,9 +185,9 @@ WHEN TO USE create_file vs edit_file:
 - Rewriting a file you didn't write → NEVER. Use edit_file for targeted changes.
 
 ENVIRONMENT:
-- React + Vite + Tailwind CSS v4 + react-router-dom + react-icons
+- React 18 + Vite + Tailwind CSS v3 + react-router-dom + lucide-react + clsx + tailwind-merge
 - .jsx for files with JSX, .js for pure logic. NEVER .ts/.tsx
-- Tailwind v4 is active
+- Tailwind v3 with HSL design tokens (bg-background, text-foreground, bg-primary, text-muted, border-border)
 - Dev server running on port 5173 — DO NOT run `npm run dev`
 
 FILE RULES:
@@ -228,7 +230,6 @@ COMMON BUILD FIXES:
 - "Cannot find module './X'" → fix the import path (pages use '../components/X', components use './Y')
 - "X is not exported from" → fix the export in the source file (add export default)
 - "Unexpected token" → fix JSX syntax
-- "@tailwind" → replace with @import "tailwindcss"
 - "{children}" in layout → use <Outlet /> from react-router-dom
 - Chart.js: must import and register: `import { Chart as ChartJS, ... } from 'chart.js'; ChartJS.register(...)`
 - Missing package: run execute_command("npm install <package-name>")

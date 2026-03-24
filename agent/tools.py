@@ -165,10 +165,12 @@ def create_tools(
             if files_tracker is not None:
                 files_tracker.extend(file_names)
 
-            safe_send_event(event_queue, {
-                "e": "files_created",
-                "message": f"Created {len(file_names)} files: {', '.join(file_names)}",
-            })
+            # Emit per-file events so the frontend shows each file appearing
+            for fname in file_names:
+                safe_send_event(event_queue, {
+                    "e": "file_created",
+                    "message": f"Created {fname}",
+                })
             return f"Successfully created {len(file_names)} files: {', '.join(file_names)}"
 
         except Exception as e:

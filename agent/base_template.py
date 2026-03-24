@@ -3,6 +3,8 @@ Base template — locked files that form the foundation of every generated React
 
 These files are written to the sandbox by the scaffold node and MUST NOT be modified by the LLM.
 The LLM only generates feature files (components, pages, context, utilities).
+
+Based on Adorable's battle-tested template: Tailwind v3 + HSL design tokens + PostCSS.
 """
 
 # All files that form the immutable project skeleton.
@@ -19,26 +21,27 @@ BASE_TEMPLATE: dict[str, str] = {
     "preview": "vite preview --host --port 5173"
   },
   "dependencies": {
-    "react": "^19.1.0",
-    "react-dom": "^19.1.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
     "react-router-dom": "^7.6.1",
-    "react-icons": "^5.5.0",
-    "lucide-react": "^0.460.0"
+    "lucide-react": "^0.460.0",
+    "clsx": "^2.1.1",
+    "tailwind-merge": "^2.5.4"
   },
   "devDependencies": {
-    "@vitejs/plugin-react": "^4.4.1",
-    "vite": "^6.3.5",
-    "@tailwindcss/vite": "^4.1.7",
-    "tailwindcss": "^4.1.7"
+    "@vitejs/plugin-react": "^4.3.1",
+    "vite": "^5.4.0",
+    "tailwindcss": "^3.4.13",
+    "postcss": "^8.4.47",
+    "autoprefixer": "^10.4.20"
   }
 }
 """,
     "vite.config.js": """import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
-import tailwindcss from "@tailwindcss/vite";
 
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  plugins: [react()],
   server: {
     host: true,
     port: 5173,
@@ -49,9 +52,41 @@ export default defineConfig({
     host: true,
     port: 5173,
     strictPort: true,
-    allowedHosts: true,
+    allowedHosts: "all",
   },
 });
+""",
+    "tailwind.config.js": """/** @type {import('tailwindcss').Config} */
+export default {
+  darkMode: ["class"],
+  content: ["./index.html", "./src/**/*.{js,jsx}"],
+  theme: {
+    extend: {
+      colors: {
+        background: "hsl(var(--background))",
+        foreground: "hsl(var(--foreground))",
+        primary: "hsl(var(--primary))",
+        primaryGlow: "hsl(var(--primary-glow))",
+        secondary: "hsl(var(--secondary))",
+        accent: "hsl(var(--accent))",
+        muted: "hsl(var(--muted))",
+        border: "hsl(var(--border))",
+      },
+      boxShadow: {
+        elegant: "var(--shadow-elegant)",
+        glow: "var(--shadow-glow)",
+      },
+    },
+  },
+  plugins: [],
+};
+""",
+    "postcss.config.js": """export default {
+  plugins: {
+    tailwindcss: {},
+    autoprefixer: {},
+  },
+};
 """,
     "index.html": """<!DOCTYPE html>
 <html lang="en">
@@ -77,9 +112,33 @@ ReactDOM.createRoot(document.getElementById("root")).render(
   </React.StrictMode>
 );
 """,
-    "src/index.css": """@import "tailwindcss";
+    "src/index.css": """@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* =========================
+   DESIGN TOKENS (HSL ONLY)
+   ========================= */
+:root {
+  --background: 220 20% 98%;
+  --foreground: 222 47% 11%;
+
+  --primary: 245 80% 60%;
+  --primary-glow: 245 90% 70%;
+  --secondary: 210 40% 96%;
+  --accent: 280 80% 65%;
+  --muted: 215 16% 47%;
+  --border: 214 32% 91%;
+
+  --shadow-elegant: 0 10px 30px -10px hsl(var(--primary) / 0.35);
+  --shadow-glow: 0 0 40px hsl(var(--primary-glow) / 0.45);
+}
+
+body {
+  @apply bg-background text-foreground antialiased;
+}
 """,
 }
 
 # Files that must never be overwritten by the LLM (even via create_file).
-LOCKED_FILES = {"vite.config.js", "src/main.jsx", "index.html"}
+LOCKED_FILES = {"vite.config.js", "src/main.jsx", "index.html", "tailwind.config.js", "postcss.config.js"}
