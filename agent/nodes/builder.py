@@ -23,7 +23,7 @@ from ..prompts import (
     get_builder_prompt,
 )
 from ..formatters import generate_build_summary
-from .helpers import safe_send_event, store_message, stream_agent_events, NodeTimer
+from .helpers import safe_send_event, store_message, stream_agent_events, _progress_ticker, NodeTimer
 
 
 async def _execute_tool_calls(tool_calls, tool_map, event_queue) -> list[dict]:
@@ -87,8 +87,20 @@ async def _single_shot_build(
 
     safe_send_event(event_queue, {"e": "thinking", "message": "Generating all components..."})
 
-    # Pass 1
-    response = await llm_with_tools.ainvoke(messages)
+    # Progress ticker keeps the frontend alive during LLM generation
+    stop_event = asyncio.Event()
+    ticker_task = asyncio.create_task(_progress_ticker(event_queue, stop_event))
+
+    try:
+        # Pass 1
+        response = await llm_with_tools.ainvoke(messages)
+    finally:
+        stop_event.set()
+        ticker_task.cancel()
+        try:
+            await ticker_task
+        except asyncio.CancelledError:
+            pass
 
     if not response.tool_calls:
         print("Single-shot builder: LLM returned no tool calls")
@@ -106,18 +118,28 @@ async def _single_shot_build(
         # Pass 2: Feed search results back so LLM can generate code
         safe_send_event(event_queue, {"e": "thinking", "message": "Generating code with search results..."})
 
+        stop_event2 = asyncio.Event()
+        ticker_task2 = asyncio.create_task(_progress_ticker(event_queue, stop_event2))
+
         # Build tool result messages for the conversation
         messages.append(response)  # AI message with tool calls
         for tc in response.tool_calls:
             tool_name = tc["name"]
-            # Find the matching result from tool_log
             result_text = next(
                 (entry["output"] for entry in tool_log if entry["name"] == tool_name),
                 "Done",
             )
             messages.append(ToolMessage(content=result_text, tool_call_id=tc.get("id", tool_name)))
 
-        response2 = await llm_with_tools.ainvoke(messages)
+        try:
+            response2 = await llm_with_tools.ainvoke(messages)
+        finally:
+            stop_event2.set()
+            ticker_task2.cancel()
+            try:
+                await ticker_task2
+            except asyncio.CancelledError:
+                pass
 
         if response2.tool_calls:
             tool_log2 = await _execute_tool_calls(response2.tool_calls, tool_map, event_queue)

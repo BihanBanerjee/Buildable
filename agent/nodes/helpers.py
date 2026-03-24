@@ -93,7 +93,7 @@ async def store_message(chat_id: str, role: str, content: str, event_type: str =
 # ─────────────────────────────────────────────────────────────
 
 async def _progress_ticker(event_queue: asyncio.Queue, stop_event: asyncio.Event):
-    """Send progress pulses every 8 seconds while the agent is generating code."""
+    """Send progress pulses every 5 seconds while the agent is generating code."""
     progress_messages = [
         "Writing components...",
         "Generating styles...",
@@ -108,7 +108,7 @@ async def _progress_ticker(event_queue: asyncio.Queue, stop_event: asyncio.Event
     ]
     tick = 0
     while not stop_event.is_set():
-        await asyncio.sleep(8)
+        await asyncio.sleep(5)
         if stop_event.is_set():
             break
         msg_index = tick % len(progress_messages)
