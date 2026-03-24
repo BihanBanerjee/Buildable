@@ -371,6 +371,41 @@ async def restart_project_sandbox(
         raise HTTPException(status_code=500, detail=f"Failed to restart sandbox: {str(e)}")
 
 
+@app.post("/projects/{id}/deploy")
+async def deploy_project(
+    id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Deploy a project to Cloudflare Pages via Wrangler inside the E2B sandbox."""
+    result = await db.execute(select(Chat).where(Chat.id == id))
+    chat = result.scalar_one_or_none()
+    if not chat or chat.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not authorized to access this project")
+
+    sandbox = agent_service.sandboxes.get(id)
+    if not sandbox:
+        # Try to reconnect
+        try:
+            sandbox = await agent_service.get_e2b_sandbox(id)
+        except Exception:
+            raise HTTPException(status_code=404, detail="Project sandbox not found or expired. Restart the project first.")
+
+    project_name = chat.title or f"buildable-{id[:8]}"
+
+    from utils.cloudflare import deploy_to_cloudflare
+    deploy_result = await deploy_to_cloudflare(sandbox, project_name)
+
+    if not deploy_result["success"]:
+        raise HTTPException(status_code=500, detail=deploy_result["error"])
+
+    # Save deployed URL to database
+    chat.deployed_url = deploy_result["url"]
+    await db.commit()
+
+    return {"success": True, "url": deploy_result["url"]}
+
+
 @app.get("/projects/{id}/download")
 async def download_all_files(
     id: str,

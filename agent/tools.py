@@ -5,6 +5,7 @@ from langchain_core.tools import tool
 import os
 from datetime import datetime
 from utils.store import save_json_store, load_json_store
+from .base_template import LOCKED_FILES
 
 
 async def check_missing_packages_standalone(sandbox: AsyncSandbox) -> list[str]:
@@ -84,6 +85,10 @@ def create_tools(
     async def create_file(file_path: str, content: str) -> str:
         """Create/overwrite a file. Path relative to root, e.g. "src/App.jsx"."""
         try:
+            # Prevent overwriting locked base template files
+            if file_path in LOCKED_FILES:
+                return f"ERROR: {file_path} is a locked base template file and cannot be modified."
+
             full_path = os.path.join("/home/user/react-app", file_path)
             await sandbox.files.write(full_path, content)
             if files_tracker is not None:
@@ -273,15 +278,27 @@ def create_tools(
 
     # ── Assemble tool list by mode ───────────────────────────
 
+    # Web search tool (optional — only available if SERPER_API_KEY is set)
+    web_search_tool = None
+    if os.getenv("SERPER_API_KEY"):
+        from .web_search import create_web_search_tool
+        web_search_tool = create_web_search_tool()
+
     if mode == "first_build":
-        return [create_file, write_multiple_files]
+        tools = [create_file, write_multiple_files]
+        if web_search_tool:
+            tools.insert(0, web_search_tool)
+        return tools
 
     elif mode == "first_build_fallback":
         # Scaffold failed — builder needs everything to self-recover
-        return [
+        tools = [
             create_file, write_multiple_files, read_file,
             execute_command, list_directory,
         ]
+        if web_search_tool:
+            tools.insert(0, web_search_tool)
+        return tools
 
     elif mode == "follow_up":
         return [

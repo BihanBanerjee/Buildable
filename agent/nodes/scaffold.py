@@ -1,15 +1,17 @@
 """
 Node 2: SCAFFOLD — deterministic setup (no LLM).
 
-Installs deps, generates App.jsx with routes, creates page stubs.
+Writes base template files, installs deps, generates App.jsx with routes, creates page stubs.
 On follow-ups where the plan introduces new pages, auto-updates App.jsx routes.
 """
 
+import asyncio
 import traceback
 
 from langchain_core.runnables import RunnableConfig
 
 from ..graph_state import GraphState
+from ..base_template import BASE_TEMPLATE, LOCKED_FILES
 from .helpers import safe_send_event, NodeTimer
 
 
@@ -203,14 +205,43 @@ async def scaffold_node(state: GraphState, config: RunnableConfig) -> dict:
 
         safe_send_event(event_queue, {"e": "builder_started", "message": "Generating code for your application..."})
 
-        # Step 1: Install dependencies (with --legacy-peer-deps fallback for React 19 compat)
+        # Step 1: Write base template files in parallel (locked infra files)
+        async def write_base_file(file_path: str, content: str):
+            await sandbox.files.write(f"{path}/{file_path}", content)
+
+        await asyncio.gather(*[
+            write_base_file(fp, content)
+            for fp, content in BASE_TEMPLATE.items()
+        ])
+        files_created.extend(BASE_TEMPLATE.keys())
+        safe_send_event(event_queue, {
+            "e": "tool_completed",
+            "tool_name": "scaffold",
+            "tool_output": f"Wrote {len(BASE_TEMPLATE)} base template files",
+        })
+
+        # Step 2: Install plan dependencies (with --legacy-peer-deps fallback for React 19 compat)
+        # npm install from base template package.json first
+        safe_send_event(event_queue, {
+            "e": "tool_started",
+            "tool_name": "execute_command",
+            "tool_input": {"command": "npm install"},
+        })
+        try:
+            result = await sandbox.commands.run("npm install", cwd=path, timeout=120)
+            install_ok = result.exit_code == 0
+        except Exception:
+            install_ok = False
+
+        if not install_ok:
+            try:
+                await sandbox.commands.run("npm install --legacy-peer-deps", cwd=path, timeout=120)
+            except Exception as e:
+                print(f"Scaffold base npm install failed: {e}")
+
+        # Install extra plan dependencies
         if dependencies:
             dep_str = " ".join(dependencies)
-            safe_send_event(event_queue, {
-                "e": "tool_started",
-                "tool_name": "execute_command",
-                "tool_input": {"command": f"npm install {dep_str}"},
-            })
             try:
                 result = await sandbox.commands.run(f"npm install {dep_str}", cwd=path, timeout=120)
                 install_ok = result.exit_code == 0
@@ -219,7 +250,6 @@ async def scaffold_node(state: GraphState, config: RunnableConfig) -> dict:
                 install_ok = False
 
             if not install_ok:
-                # Retry with --legacy-peer-deps for packages that don't support React 19 yet
                 try:
                     result = await sandbox.commands.run(
                         f"npm install --legacy-peer-deps {dep_str}", cwd=path, timeout=120
@@ -229,39 +259,30 @@ async def scaffold_node(state: GraphState, config: RunnableConfig) -> dict:
                 except Exception as retry_err:
                     print(f"Scaffold npm install failed even with --legacy-peer-deps: {str(retry_err)[:200]}")
 
-            safe_send_event(event_queue, {
-                "e": "tool_completed",
-                "tool_name": "execute_command",
-                "tool_output": f"npm install {dep_str}: {'ok' if install_ok else 'failed'}",
-            })
+        safe_send_event(event_queue, {
+            "e": "tool_completed",
+            "tool_name": "execute_command",
+            "tool_output": f"Dependencies installed",
+        })
 
-        # Step 2: If plan has only 1 page, make it the root route directly (no Home.jsx)
-        # If multiple pages, keep Home as landing page
+        # Step 3: Determine page structure
         if len(pages) == 1 and pages[0] != "Home":
-            # Single page app: that page IS the home page at /
             effective_pages = pages
         else:
-            # Multi-page: ensure Home is the first page (landing)
             if "Home" not in pages:
                 effective_pages = ["Home"] + pages
             else:
                 effective_pages = pages
 
-        # Step 3: Generate and write App.jsx
+        # Step 4: Generate and write App.jsx (routes)
         app_jsx_content = _generate_app_jsx(effective_pages, components)
         await sandbox.files.write(f"{path}/src/App.jsx", app_jsx_content)
         files_created.append("src/App.jsx")
         safe_send_event(event_queue, {"e": "file_created", "message": "Created src/App.jsx"})
 
-        # Step 4: Generate and write index.css
-        index_css = '@import "tailwindcss";\n'
-        await sandbox.files.write(f"{path}/src/index.css", index_css)
-        files_created.append("src/index.css")
-
         # Step 5: Create placeholder page stubs so imports don't break
         for page in effective_pages:
             if page == "Home" and len(pages) == 1 and pages[0] != "Home":
-                # Skip Home — the single page IS the home
                 continue
             page_content = f"""import React from 'react'
 

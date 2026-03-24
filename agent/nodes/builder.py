@@ -26,38 +26,12 @@ from ..formatters import generate_build_summary
 from .helpers import safe_send_event, store_message, stream_agent_events, NodeTimer
 
 
-async def _single_shot_build(
-    builder_llm,
-    tools: list,
-    system_prompt: str,
-    user_message: str,
-    event_queue: asyncio.Queue,
-    project_id: str,
-    files_tracker: list,
-) -> bool:
-    """Single-shot builder: 1 LLM call that returns all files via tool calls.
-
-    Returns True if files were generated, False otherwise.
-    """
-    llm_with_tools = builder_llm.bind_tools(tools)
-
-    messages = [
-        SystemMessage(content=system_prompt),
-        HumanMessage(content=user_message),
-    ]
-
-    safe_send_event(event_queue, {"e": "thinking", "message": "Generating all components..."})
-
-    response = await llm_with_tools.ainvoke(messages)
-
-    if not response.tool_calls:
-        print("Single-shot builder: LLM returned no tool calls")
-        return False
-
-    tool_map = {t.name: t for t in tools}
+async def _execute_tool_calls(tool_calls, tool_map, event_queue) -> list[dict]:
+    """Execute a list of tool calls and emit SSE events. Returns tool log."""
     tool_log: list[dict] = []
+    results: dict[str, str] = {}
 
-    for tc in response.tool_calls:
+    for tc in tool_calls:
         tool_name = tc["name"]
         tool_args = tc["args"]
 
@@ -70,23 +44,92 @@ async def _single_shot_build(
         matching = tool_map.get(tool_name)
         if matching:
             result = await matching.ainvoke(tool_args)
-            output_str = str(result)[:150] if result else ""
+            output_str = str(result)[:500] if result else ""
             safe_send_event(event_queue, {
                 "e": "tool_completed",
                 "tool_name": tool_name,
-                "tool_output": output_str,
+                "tool_output": output_str[:150],
             })
-            tool_log.append({"name": tool_name, "status": "success", "output": output_str})
+            tool_log.append({"name": tool_name, "status": "success", "output": output_str[:150]})
+            results[tc.get("id", tool_name)] = output_str
         else:
             print(f"Single-shot builder: unknown tool {tool_name}")
 
-    if tool_log:
+    return tool_log
+
+
+async def _single_shot_build(
+    builder_llm,
+    tools: list,
+    system_prompt: str,
+    user_message: str,
+    event_queue: asyncio.Queue,
+    project_id: str,
+    files_tracker: list,
+) -> bool:
+    """Single-shot builder with optional web search: up to 2 LLM calls.
+
+    Pass 1: LLM may call web_search and/or write_multiple_files.
+    Pass 2: If web_search was called but no files created, feed results back for a second call.
+
+    Returns True if files were generated, False otherwise.
+    """
+    from langchain_core.messages import AIMessage, ToolMessage
+
+    llm_with_tools = builder_llm.bind_tools(tools)
+    tool_map = {t.name: t for t in tools}
+    all_tool_log: list[dict] = []
+
+    messages = [
+        SystemMessage(content=system_prompt),
+        HumanMessage(content=user_message),
+    ]
+
+    safe_send_event(event_queue, {"e": "thinking", "message": "Generating all components..."})
+
+    # Pass 1
+    response = await llm_with_tools.ainvoke(messages)
+
+    if not response.tool_calls:
+        print("Single-shot builder: LLM returned no tool calls")
+        return False
+
+    tool_log = await _execute_tool_calls(response.tool_calls, tool_map, event_queue)
+    all_tool_log.extend(tool_log)
+
+    # Check if web_search was called but no files were created yet
+    called_tools = {tc["name"] for tc in response.tool_calls}
+    has_search = "web_search" in called_tools
+    has_files = "write_multiple_files" in called_tools or "create_file" in called_tools
+
+    if has_search and not has_files:
+        # Pass 2: Feed search results back so LLM can generate code
+        safe_send_event(event_queue, {"e": "thinking", "message": "Generating code with search results..."})
+
+        # Build tool result messages for the conversation
+        messages.append(response)  # AI message with tool calls
+        for tc in response.tool_calls:
+            tool_name = tc["name"]
+            # Find the matching result from tool_log
+            result_text = next(
+                (entry["output"] for entry in tool_log if entry["name"] == tool_name),
+                "Done",
+            )
+            messages.append(ToolMessage(content=result_text, tool_call_id=tc.get("id", tool_name)))
+
+        response2 = await llm_with_tools.ainvoke(messages)
+
+        if response2.tool_calls:
+            tool_log2 = await _execute_tool_calls(response2.tool_calls, tool_map, event_queue)
+            all_tool_log.extend(tool_log2)
+
+    if all_tool_log:
         await store_message(
             chat_id=project_id,
             role="assistant",
-            content=f"Executed {len(tool_log)} tool calls: {', '.join(t['name'] for t in tool_log)}",
+            content=f"Executed {len(all_tool_log)} tool calls: {', '.join(t['name'] for t in all_tool_log)}",
             event_type="tool_summary",
-            tool_calls=tool_log,
+            tool_calls=all_tool_log,
         )
 
     return len(files_tracker) > 0
