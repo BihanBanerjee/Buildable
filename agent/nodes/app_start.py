@@ -125,7 +125,11 @@ async def app_start_node(state: GraphState, config: RunnableConfig) -> dict:
             if need_restart:
                 if port_open:
                     # Kill existing Vite so we get fresh logs
-                    await sandbox.commands.run("pkill -f 'vite' || true", cwd=path, timeout=5)
+                    # Use lsof to find the exact PID to avoid pkill matching itself
+                    await sandbox.commands.run(
+                        "kill $(lsof -ti :5173) 2>/dev/null || true",
+                        cwd=path, timeout=5,
+                    )
                     await asyncio.sleep(1)
                     print("App start: Killed existing Vite to get fresh logs after fixer")
                 else:

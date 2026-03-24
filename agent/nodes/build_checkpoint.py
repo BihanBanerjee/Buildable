@@ -60,14 +60,33 @@ async def build_checkpoint_node(state: GraphState, config: RunnableConfig) -> di
         # Clean Vite cache
         await sandbox.commands.run("rm -rf node_modules/.vite-temp", cwd=path, timeout=10)
 
-        # Run vite build
-        result = await asyncio.wait_for(
-            sandbox.commands.run("npx vite build --mode development 2>&1", cwd=path, timeout=120),
-            timeout=130,
-        )
-
-        build_passed = result.exit_code == 0
-        build_errors = "" if build_passed else (result.stderr or result.stdout or "Unknown build error")
+        # Run vite build — capture stdout and stderr separately
+        build_passed = False
+        build_errors = ""
+        try:
+            result = await asyncio.wait_for(
+                sandbox.commands.run("npx vite build --mode development", cwd=path, timeout=120),
+                timeout=130,
+            )
+            build_passed = result.exit_code == 0
+            if not build_passed:
+                # Combine stderr + stdout for full error context
+                build_errors = (result.stderr or "") + "\n" + (result.stdout or "")
+                build_errors = build_errors.strip() or "Unknown build error"
+        except Exception as build_exc:
+            # E2B may raise on non-zero exit — extract what we can
+            exc_str = str(build_exc)
+            build_errors = exc_str if exc_str.strip() else "Build command failed"
+            # Try to get the actual build output from a separate command
+            try:
+                retry = await sandbox.commands.run(
+                    "npx vite build --mode development 2>&1 || true",
+                    cwd=path, timeout=60,
+                )
+                if retry.stdout and retry.stdout.strip():
+                    build_errors = retry.stdout.strip()
+            except Exception:
+                pass
 
         if build_passed:
             print("Build checkpoint: PASSED")
