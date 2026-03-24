@@ -207,7 +207,7 @@ async def builder_node(state: GraphState, config: RunnableConfig) -> dict:
 
         # Use the cheaper fast model for follow-up edits (e.g. Flash/Haiku)
         effective_model = get_fast_model(builder_model) if not is_first_message else builder_model
-        builder_llm = create_llm(api_key, effective_model, max_tokens=16000)
+        builder_llm = create_llm(api_key, effective_model, max_tokens=32000)
 
         # Build the user message
         if not is_first_message:
@@ -226,7 +226,7 @@ async def builder_node(state: GraphState, config: RunnableConfig) -> dict:
                         builder_llm, tools, system_prompt, user_message,
                         event_queue, project_id, files_tracker,
                     ),
-                    timeout=120,
+                    timeout=240,
                 )
                 if not success:
                     builder_error = "Build failed — no files were generated. This may be due to an API issue. Please try again."
