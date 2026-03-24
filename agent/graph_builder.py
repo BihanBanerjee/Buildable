@@ -1,16 +1,11 @@
 """
 LangGraph workflow builder for the orchestration.
 
-First build:  planner → scaffold → builder → build_checkpoint ⇄ fixer → app_start ⇄ fixer → END
+First build:  planner → scaffold → builder → app_start ⇄ fixer → END
 Follow-up:    builder → build_checkpoint ⇄ fixer → app_start ⇄ fixer → END
 
-- router: Routes to planner (first build) or directly to builder (follow-up)
-- planner: Fast model generates the plan (structured output)
-- scaffold: Deterministic — installs deps, generates App.jsx with routes, zero LLM
-- builder: Expensive model creates component/page files via ReAct agent
-- build_checkpoint: Deterministic — runs npx vite build, zero LLM
-- fixer: Cheap model (Flash) fixes build errors, max 2 retries
-- app_start: Deterministic — ensures Vite dev server is running + runtime error check
+First builds skip build_checkpoint for speed (single-shot builder + direct app start).
+Follow-ups still validate with vite build since surgical edits are more error-prone.
 """
 
 from langgraph.graph import StateGraph, END
@@ -31,6 +26,22 @@ def route_entry(state: GraphState) -> str:
         return "planner"
     print("Follow-up — skipping planner/scaffold, going straight to builder")
     return "builder"
+
+
+def route_after_builder(state: GraphState) -> str:
+    """Route after builder: first builds skip validation, follow-ups validate.
+
+    First builds use single-shot generation and go straight to app_start.
+    Follow-ups go through build_checkpoint for vite build validation.
+    """
+    if state.get("error_message"):
+        print("Builder had an error — going to app_start")
+        return "app_start"
+    if state.get("is_first_message", True):
+        print("First build — skipping build_checkpoint, going straight to app_start")
+        return "app_start"
+    print("Follow-up — running build_checkpoint for validation")
+    return "build_checkpoint"
 
 
 def should_fix_or_start(state: GraphState) -> str:
@@ -73,9 +84,9 @@ def create_langgraph_workflow():
     """Build the LangGraph state machine.
 
     First build:
-      planner → scaffold → builder → build_checkpoint ─── (pass) ───→ app_start ─── (ok) ───→ END
-                                            ↑                  │           │
-                                            └── fixer ◄────────┘───────────┘
+      planner → scaffold → builder ────────────────────→ app_start ─── (ok) ───→ END
+                                                              │
+                                                              └── fixer → build_checkpoint → ...
 
     Follow-up:
       builder → build_checkpoint ─── (pass) ───→ app_start ─── (ok) ───→ END
@@ -104,8 +115,12 @@ def create_langgraph_workflow():
     workflow.add_edge("planner", "scaffold")
     workflow.add_edge("scaffold", "builder")
 
-    # Common path: builder → build_checkpoint
-    workflow.add_edge("builder", "build_checkpoint")
+    # After builder: first builds skip to app_start, follow-ups validate
+    workflow.add_conditional_edges(
+        "builder",
+        route_after_builder,
+        {"app_start": "app_start", "build_checkpoint": "build_checkpoint"},
+    )
 
     # Conditional: build_checkpoint → fixer or app_start
     workflow.add_conditional_edges(
