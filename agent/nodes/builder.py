@@ -74,7 +74,7 @@ async def _single_shot_build(
 
     Returns True if files were generated, False otherwise.
     """
-    from langchain_core.messages import AIMessage, ToolMessage
+    from langchain_core.messages import ToolMessage
 
     llm_with_tools = builder_llm.bind_tools(tools)
     tool_map = {t.name: t for t in tools}

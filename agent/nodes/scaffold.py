@@ -11,7 +11,7 @@ import traceback
 from langchain_core.runnables import RunnableConfig
 
 from ..graph_state import GraphState
-from ..base_template import BASE_TEMPLATE, LOCKED_FILES
+from ..base_template import BASE_TEMPLATE
 from .helpers import safe_send_event, NodeTimer
 
 
@@ -262,7 +262,7 @@ async def scaffold_node(state: GraphState, config: RunnableConfig) -> dict:
         safe_send_event(event_queue, {
             "e": "tool_completed",
             "tool_name": "execute_command",
-            "tool_output": f"Dependencies installed",
+            "tool_output": "Dependencies installed",
         })
 
         # Step 3: Determine page structure
