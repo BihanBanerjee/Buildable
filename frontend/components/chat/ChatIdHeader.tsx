@@ -82,17 +82,7 @@ export function ChatIdHeader({
           </Button>
           <ApiKeySettings userData={userData} onUserDataUpdate={onUserDataUpdate || (() => {})} />
 
-          {deployedUrl ? (
-            <Button
-              size="sm"
-              variant="outline"
-              className="gap-1.5 text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/10"
-              onClick={() => window.open(deployedUrl, "_blank")}
-            >
-              <ExternalLink size={14} />
-              Live Site
-            </Button>
-          ) : appUrl ? (
+          {appUrl && (
             <Button
               size="sm"
               variant="outline"
@@ -105,9 +95,20 @@ export function ChatIdHeader({
               ) : (
                 <Rocket size={14} />
               )}
-              {isDeploying ? "Deploying..." : "Deploy"}
+              {isDeploying ? "Deploying..." : deployedUrl ? "Redeploy" : "Deploy"}
             </Button>
-          ) : null}
+          )}
+          {deployedUrl && (
+            <Button
+              size="sm"
+              variant="outline"
+              className="gap-1.5 text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/10"
+              onClick={() => window.open(deployedUrl, "_blank")}
+            >
+              <ExternalLink size={14} />
+              Live Site
+            </Button>
+          )}
 
           {deployError && (
             <span className="text-xs text-red-400 max-w-48 truncate" title={deployError}>
