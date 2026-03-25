@@ -107,19 +107,24 @@ export function consolidateMessages(msgs: Message[]): Message[] {
 
     if (msg.role === "assistant") {
       if (msg.event_type === "completed") {
-        if (currentAssistantGroup) {
-          currentAssistantGroup.isCompleted = true;
-          currentAssistantGroup.isSuccess = true;
-          // Extract build summary from stored completed message
-          if (msg.tool_calls && msg.tool_calls.length > 0) {
-            const summary = msg.tool_calls.find((t) => t.name === "build_summary");
-            if (summary?.output) {
-              try {
-                const meta = JSON.parse(summary.output);
-                if (meta.duration_s) currentAssistantGroup.buildDuration = meta.duration_s;
-                if (meta.files) currentAssistantGroup.buildFiles = meta.files;
-              } catch { /* ignore parse errors */ }
-            }
+        // If no preceding assistant message exists, create one from the completed message
+        if (!currentAssistantGroup) {
+          currentAssistantGroup = {
+            ...msg,
+            content: "",
+          };
+        }
+        currentAssistantGroup.isCompleted = true;
+        currentAssistantGroup.isSuccess = true;
+        // Extract build summary from stored completed message
+        if (msg.tool_calls && msg.tool_calls.length > 0) {
+          const summary = msg.tool_calls.find((t) => t.name === "build_summary");
+          if (summary?.output) {
+            try {
+              const meta = JSON.parse(summary.output);
+              if (meta.duration_s) currentAssistantGroup.buildDuration = meta.duration_s;
+              if (meta.files) currentAssistantGroup.buildFiles = meta.files;
+            } catch { /* ignore parse errors */ }
           }
         }
         continue;
