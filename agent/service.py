@@ -149,6 +149,13 @@ class Service:
 
         await asyncio.gather(*[write_one(p, c) for p, c in files_dict.items()])
 
+        # Always force-write locked base template files (especially vite.config.js
+        # with allowedHosts: true) to ensure sandbox previews work after restart
+        from .base_template import BASE_TEMPLATE
+        for locked_file in LOCKED_FILES:
+            if locked_file in BASE_TEMPLATE:
+                await write_one(locked_file, BASE_TEMPLATE[locked_file])
+
         try:
             await sandbox.commands.run("rm -rf node_modules/.vite-temp", cwd="/home/user/react-app")
         except Exception:
