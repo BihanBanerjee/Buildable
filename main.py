@@ -22,7 +22,6 @@ from db.base import get_db, AsyncSessionLocal
 
 from auth.utils import decode_token
 from utils.crypto import decrypt_api_key
-from agent.agent import MODELS, DEFAULT_BUILDER_MODEL
 
 
 app = FastAPI(title="Buildable")
@@ -52,7 +51,6 @@ active_runs: dict[str, asyncio.Task] = {}
 
 class ChatPayload(BaseModel):
     prompt: str
-    model_choice: str = "google/gemini-2.5-pro"  # Full OpenRouter model ID
 
 
 class ChatMessagePayload(BaseModel):
@@ -140,14 +138,10 @@ async def create_project(
             {"error": "Project is being created. Kindly wait"}, status_code=400
         )
 
-    allowed_models = set(MODELS.values())
-    model_choice = payload.model_choice if payload.model_choice in allowed_models else DEFAULT_BUILDER_MODEL
-
     new_chat = Chat(
         id=chat_id,
         user_id=current_user.id,
         title=prompt[:100] if len(prompt) > 100 else prompt,
-        model_choice=model_choice,
     )
 
     db.add(new_chat)
@@ -172,10 +166,9 @@ async def create_project(
     # Start agent task in background
     async def agent_task():
         try:
-            await agent_service.run_agent_stream(
-                prompt=prompt, id=chat_id, event_queue=event_queue,
-                openrouter_api_key=openrouter_api_key, builder_model=model_choice,
-                is_first_message=True,
+            await agent_service.handle_first_build(
+                prompt=prompt, api_key=openrouter_api_key,
+                project_id=chat_id, event_queue=event_queue,
             )
         except Exception as e:
             print(f"Agent error: {e}")
@@ -680,15 +673,11 @@ async def send_message(
         raise HTTPException(status_code=400, detail="Please add your OpenRouter API key in Settings before building.")
     openrouter_api_key = decrypt_api_key(current_user.encrypted_openrouter_key)
 
-    # Read model_choice from the chat record so follow-ups use the same model
-    chat_model_choice = getattr(chat, "model_choice", DEFAULT_BUILDER_MODEL) or DEFAULT_BUILDER_MODEL
-
     async def agent_task():
         try:
-            await agent_service.run_agent_stream(
-                prompt=prompt, id=id, event_queue=event_queue,
-                openrouter_api_key=openrouter_api_key, builder_model=chat_model_choice,
-                is_first_message=False,
+            await agent_service.handle_follow_up(
+                message=prompt, api_key=openrouter_api_key,
+                project_id=id, event_queue=event_queue,
             )
         except Exception as e:
             print(f"Error in agent task for project {id}: {e}")
