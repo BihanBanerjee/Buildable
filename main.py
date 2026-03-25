@@ -209,46 +209,31 @@ async def create_project(
     }
 
 
-_LIST_FILES_SCRIPT = """
-import os
-import json
-
-def should_exclude(path):
-    exclude_dirs = ['node_modules', '.git', '__pycache__', '.next', 'dist', 'build', '.venv', 'venv']
-    exclude_files = ['.DS_Store', 'package-lock.json', 'yarn.lock']
-    parts = path.split(os.sep)
-    for part in parts:
-        if part in exclude_dirs:
-            return True
-    if os.path.basename(path) in exclude_files:
-        return True
-    return False
-
-def list_files_recursive(path):
-    file_structure = []
-    for root, dirs, files in os.walk(path):
-        dirs[:] = [d for d in dirs if d not in ['node_modules', '.git', '__pycache__', '.next', 'dist', 'build', '.venv', 'venv']]
-        for name in files:
-            relative_path = os.path.relpath(os.path.join(root, name), path)
-            if not should_exclude(relative_path):
-                file_structure.append(relative_path)
-    return file_structure
-
-react_app_path = "/home/user/react-app"
-if os.path.exists(react_app_path):
-    print(json.dumps(list_files_recursive(react_app_path)))
-else:
-    print(json.dumps([]))
-"""
-
-
 async def _list_sandbox_files(sandbox) -> list:
     """List all project files in the sandbox, excluding build artifacts."""
-    await sandbox.files.write("/tmp/list_files.py", _LIST_FILES_SCRIPT)
-    proc = await sandbox.commands.run("python /tmp/list_files.py", cwd="/tmp")
+    proc = await sandbox.commands.run(
+        'find /home/user/react-app -type f '
+        '-not -path "*/node_modules/*" '
+        '-not -path "*/.git/*" '
+        '-not -path "*/__pycache__/*" '
+        '-not -path "*/.next/*" '
+        '-not -path "*/dist/*" '
+        '-not -path "*/build/*" '
+        '-not -name ".DS_Store" '
+        '-not -name "package-lock.json" '
+        '-not -name "yarn.lock" '
+        '2>/dev/null || echo ""',
+        timeout=10,
+    )
     if proc.exit_code != 0:
         raise Exception(f"Failed to list files: {proc.stderr}")
-    return json.loads(proc.stdout)
+    base = "/home/user/react-app/"
+    files = []
+    for line in proc.stdout.strip().split("\n"):
+        line = line.strip()
+        if line and line.startswith(base):
+            files.append(line[len(base):])
+    return files
 
 
 @app.get("/projects/{id}/files", response_model=ProjectFilesResponse)
