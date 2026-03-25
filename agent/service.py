@@ -1,35 +1,49 @@
-from .graph_builder import get_workflow
-from typing import Dict
-from e2b_code_interpreter import AsyncSandbox
-from dotenv import load_dotenv
+"""
+Service layer — orchestrates build/edit agents, sandbox lifecycle, and SSE streaming.
+
+Entry points:
+  handle_first_build()  — initial project generation
+  handle_follow_up()    — follow-up edits with validation loop
+"""
+
 import asyncio
-from db.base import AsyncSessionLocal
-from db.models import Message, Chat
-from sqlalchemy import select
-import os
 import json
+import os
 import time
 import traceback
 import uuid
 from datetime import datetime
+from typing import Dict
+
+from dotenv import load_dotenv
+from e2b_code_interpreter import AsyncSandbox
+from sqlalchemy import select
+
+from db.base import AsyncSessionLocal
+from db.models import Chat, Message
 from utils.store import load_json_store, save_json_store
+
+from .assembler import assemble_project
+from .build_agent import run_build_stream
+from .edit_agent import run_edit_stream, run_error_fix_stream
+from .sandbox import (
+    create_sandbox,
+    update_sandbox_files,
+    validate_sandbox_build,
+)
+from .prompts import GUARDRAIL_PROMPT, CHAT_RESPONSE_PROMPT
 
 load_dotenv()
 
-# After building your E2B template with 'e2b template build',
-# copy the generated template_id from e2b.toml and paste it here
-TEMPLATE_ID = os.getenv("E2B_TEMPLATE_ID", None)  # Set in .env or use None for default
+TEMPLATE_ID = os.getenv("E2B_TEMPLATE_ID", None)
 base_path = "/home/user/react-app"
 
 
 class Service:
-    """
-    LangGraph-based multi-agent service for React application development
-    """
+    """Orchestrates the 2-agent pipeline with sandbox lifecycle management."""
 
     def __init__(self) -> None:
         self.sandboxes: Dict[str, AsyncSandbox] = {}
-        self.workflow = get_workflow()
         self.project_timestamps: Dict[str, float] = {}
         self.sandbox_timeout = 1800
         self.storage_base_path = os.path.join(
@@ -37,35 +51,29 @@ class Service:
         )
         os.makedirs(self.storage_base_path, exist_ok=True)
 
-    async def get_e2b_sandbox(self, id: str) -> AsyncSandbox:
-        """Get or create E2B sandbox for project"""
+    # ── Sandbox management (kept from previous implementation) ──
 
+    async def get_e2b_sandbox(self, id: str) -> AsyncSandbox:
+        """Get or create E2B sandbox for project."""
         current_time = time.time()
 
-        # Check if sandbox exists and is still valid
         if id in self.sandboxes:
             last_access = self.project_timestamps.get(id, 0)
-            time_elapsed = current_time - last_access
-
-            if time_elapsed < self.sandbox_timeout:
+            if current_time - last_access < self.sandbox_timeout:
                 await self.sandboxes[id].set_timeout(self.sandbox_timeout)
                 self.project_timestamps[id] = current_time
-                print(f"Extended timeout for existing sandbox: {id}")
                 return self.sandboxes[id]
             else:
-                print(f"Sandbox expired for project {id}, recreating...")
                 try:
                     await self.sandboxes[id].kill()
-                except Exception as kill_err:
-                    print(f"Failed to kill expired sandbox (likely already dead): {kill_err}")
+                except Exception:
+                    pass
                 del self.sandboxes[id]
 
-        # Cache miss — try to reconnect to an existing E2B sandbox
         sandbox, is_new = await self._try_reconnect_sandbox(id)
         self.sandboxes[id] = sandbox
         await sandbox.set_timeout(self.sandbox_timeout)
         self.project_timestamps[id] = current_time
-        print(f"Sandbox ready for project {id} (new={is_new})")
 
         if is_new:
             await self._restore_files_from_disk(id, sandbox)
@@ -81,63 +89,50 @@ class Service:
                 with open(metadata_file, "r") as f:
                     stored = json.load(f)
                 sandbox_id = stored.get("sandbox_id")
-            except Exception as e:
-                print(f"Could not read metadata for sandbox reconnect: {e}")
+            except Exception:
+                pass
 
         if sandbox_id:
             try:
-                print(f"Attempting to reconnect to sandbox {sandbox_id} for project {project_id}")
                 sandbox = await asyncio.wait_for(
                     AsyncSandbox.reconnect(sandbox_id), timeout=30
                 )
-                print(f"Reconnected to existing sandbox {sandbox_id}")
                 return sandbox, False
-            except asyncio.TimeoutError:
-                print(f"Sandbox reconnect timed out after 30s for {sandbox_id}, creating fresh sandbox")
-            except Exception as e:
-                print(f"Sandbox reconnect failed (likely expired): {e}")
+            except Exception:
+                pass
 
-        # Fallback: create a fresh sandbox
-        print(f"Creating new sandbox for project {project_id}")
         if TEMPLATE_ID:
-            print(f"Using custom E2B template: {TEMPLATE_ID}")
             sandbox = await AsyncSandbox.create(template=TEMPLATE_ID, timeout=1800)
         else:
-            print("Using default E2B template")
             sandbox = await AsyncSandbox.create(timeout=1800)
         return sandbox, True
 
     async def close_sandbox(self, id: str):
-        """Close and cleanup E2B sandbox"""
         if id in self.sandboxes:
             sandbox = self.sandboxes.pop(id)
             try:
                 await sandbox.kill()
-            except Exception as kill_err:
-                print(f"Failed to kill sandbox {id} (likely already dead): {kill_err}")
-            print(f"closed sandbox: {id}")
+            except Exception:
+                pass
 
     async def _restore_files_from_disk(self, project_id: str, sandbox: AsyncSandbox):
         """Restore files from R2 (primary) or local cache to sandbox."""
         from utils.store import load_all_project_files, load_project_metadata
 
-        # Try R2 first (has original file paths), fall back to local cache
+        # Try R2 first
         files_dict = load_all_project_files(project_id)
 
         if not files_dict:
             # Fallback: load from local cache using metadata
             metadata = load_project_metadata(project_id)
-            file_list = metadata.get("files", [])
-            if not file_list:
-                print(f"No stored files found for project {project_id}")
-                return
-
-            project_dir = os.path.join(self.storage_base_path, project_id)
-            for file_path in file_list:
-                local_file = os.path.join(project_dir, file_path.replace("/", "_"))
-                if os.path.exists(local_file):
-                    with open(local_file, "r", encoding="utf-8") as f:
-                        files_dict[file_path] = f.read()
+            file_list = metadata.get("files", []) if metadata else []
+            if file_list:
+                project_dir = os.path.join(self.storage_base_path, project_id)
+                for file_path in file_list:
+                    local_file = os.path.join(project_dir, file_path.replace("/", "_"))
+                    if os.path.exists(local_file):
+                        with open(local_file, "r", encoding="utf-8") as f:
+                            files_dict[file_path] = f.read()
 
         if not files_dict:
             print(f"No files to restore for project {project_id}")
@@ -145,51 +140,18 @@ class Service:
 
         print(f"Restoring {len(files_dict)} files for project {project_id}")
 
-        async def write_one(file_path: str, content: str):
+        async def write_one(path: str, content: str):
             try:
-                await sandbox.files.write(f"/home/user/react-app/{file_path}", content)
+                await sandbox.files.write(f"/home/user/react-app/{path}", content)
             except Exception as e:
-                print(f"Failed to restore {file_path}: {e}")
+                print(f"Failed to restore {path}: {e}")
 
         await asyncio.gather(*[write_one(p, c) for p, c in files_dict.items()])
-        print(f"File restoration complete for project {project_id}")
 
-        # Clean Vite cache
         try:
-            await sandbox.commands.run(
-                "rm -rf node_modules/.vite-temp", cwd="/home/user/react-app"
-            )
-        except Exception as e:
-            print(f"Failed to clean Vite cache: {e}")
-
-    async def _save_conversation_history(
-        self, project_id: str, user_prompt: str, success: bool,
-        files_created: list = None,
-    ):
-        """Save conversation history and merge newly created files into context.json."""
-        try:
-            context = load_json_store(project_id, "context.json")
-
-            conversation_history = context.get("conversation_history", [])
-            conversation_history.append({
-                "timestamp": time.time(),
-                "user_prompt": user_prompt,
-                "success": success,
-                "date": datetime.now().isoformat(),
-            })
-            if len(conversation_history) > 10:
-                conversation_history = conversation_history[-10:]
-            context["conversation_history"] = conversation_history
-
-            if files_created:
-                existing = context.get("files_created", [])
-                context["files_created"] = list(dict.fromkeys(existing + files_created))
-
-            save_json_store(project_id, "context.json", context)
-            print(f"Saved conversation history for project {project_id}")
-
-        except Exception as e:
-            print(f"Failed to save conversation history: {e}")
+            await sandbox.commands.run("rm -rf node_modules/.vite-temp", cwd="/home/user/react-app")
+        except Exception:
+            pass
 
     async def snapshot_project_files(self, project_id: str):
         """Snapshot all source files from sandbox to R2 + local cache."""
@@ -211,45 +173,56 @@ class Service:
         ]
 
         if not file_paths:
-            print(f"No files found to snapshot for project {project_id}")
             return
 
-        # Read all files from sandbox
         files_dict: dict[str, str] = {}
-        async def read_file(file_path: str):
+
+        async def read_file(path: str):
             try:
-                content = await sandbox.files.read(f"/home/user/react-app/{file_path}")
-                files_dict[file_path] = content
-            except Exception as e:
-                print(f"Failed to read {file_path}: {e}")
+                content = await sandbox.files.read(f"/home/user/react-app/{path}")
+                files_dict[path] = content
+            except Exception:
+                pass
 
         await asyncio.gather(*[read_file(p) for p in file_paths])
 
-        if not files_dict:
-            return
+        if files_dict:
+            from utils.store import save_project_files_bulk, save_project_metadata
+            save_project_files_bulk(project_id, files_dict)
+            save_project_metadata(project_id, list(files_dict.keys()))
+            print(f"Snapshotted {len(files_dict)} files for project {project_id}")
 
-        # Save to R2 (primary) + local cache via store module
-        from utils.store import save_project_files_bulk, save_project_metadata
-        save_project_files_bulk(project_id, files_dict)
-        save_project_metadata(
-            project_id,
-            list(files_dict.keys()),
-        )
+    async def _save_conversation_history(self, project_id, user_prompt, success, files_created=None):
+        """Save conversation history to context.json."""
+        try:
+            context = load_json_store(project_id, "context.json")
+            history = context.get("conversation_history", [])
+            history.append({
+                "timestamp": time.time(),
+                "user_prompt": user_prompt,
+                "success": success,
+                "date": datetime.now().isoformat(),
+            })
+            if len(history) > 10:
+                history = history[-10:]
+            context["conversation_history"] = history
 
-        print(f"Snapshotted {len(files_dict)} files for project {project_id}")
+            if files_created:
+                existing = context.get("files_created", [])
+                context["files_created"] = list(dict.fromkeys(existing + files_created))
 
-    async def _classify_prompt(self, prompt: str, api_key: str, builder_model: str, project_id: str = "", is_first_message: bool = True) -> str:
-        """Classify whether the prompt is a build request or general chat.
+            save_json_store(project_id, "context.json", context)
+        except Exception as e:
+            print(f"Failed to save conversation history: {e}")
 
-        On follow-ups, injects project context so error messages and code-related
-        feedback are correctly classified as 'build'.
-        """
+    # ── Guardrail ──
+
+    async def _classify_prompt(self, prompt: str, api_key: str, project_id: str = "", is_first_message: bool = True) -> str:
+        """Classify prompt as 'build' or 'chat'."""
         from langchain_core.messages import SystemMessage, HumanMessage
-        from .prompts import GUARDRAIL_PROMPT
-        from .agent import create_llm, get_fast_model
+        from .agent import create_edit_llm  # Use edit model (cheap) for classification
 
         try:
-            # Build context prefix for follow-up messages
             context_prefix = ""
             if not is_first_message and project_id:
                 context = load_json_store(project_id, "context.json")
@@ -260,8 +233,7 @@ class Service:
                         f"Treat error messages, bug reports, and change requests as \"build\".]\n"
                     )
 
-            fast_model = get_fast_model(builder_model)
-            llm = create_llm(api_key, fast_model, max_tokens=16)
+            llm = create_edit_llm(api_key)
             messages = [
                 SystemMessage(content=GUARDRAIL_PROMPT),
                 HumanMessage(content=f"{context_prefix}{prompt}"),
@@ -274,14 +246,12 @@ class Service:
             print(f"Classification failed, defaulting to build: {e}")
             return "build"
 
-    async def _handle_chat_response(self, prompt: str, project_id: str, event_queue: asyncio.Queue, api_key: str, builder_model: str):
+    async def _handle_chat_response(self, prompt, project_id, event_queue, api_key):
         """Answer a non-build prompt conversationally."""
         from langchain_core.messages import SystemMessage, HumanMessage
-        from .prompts import CHAT_RESPONSE_PROMPT
-        from .agent import create_llm, get_fast_model
+        from .agent import create_edit_llm
 
-        fast_model = get_fast_model(builder_model)
-        llm = create_llm(api_key, fast_model, max_tokens=512)
+        llm = create_edit_llm(api_key)
         messages = [
             SystemMessage(content=CHAT_RESPONSE_PROMPT),
             HumanMessage(content=prompt),
@@ -306,161 +276,310 @@ class Service:
             "e": "completed",
             "url": None,
             "success": True,
-            "files_created": [],
         })
 
-    async def run_agent_stream(self, prompt: str, id: str, event_queue: asyncio.Queue, openrouter_api_key: str = "", builder_model: str = "google/gemini-2.5-pro", is_first_message: bool = True):
-        """Run the LangGraph multi-agent workflow."""
+    # ── Main entry points ──
+
+    async def handle_first_build(self, prompt: str, api_key: str, project_id: str, event_queue: asyncio.Queue):
+        """First build flow:
+        1. Classify prompt (guardrail)
+        2. If chat: respond and return
+        3. Run build agent -> get generated files
+        4. assemble_project() -> merge with base template
+        5. create_sandbox() -> get sandbox_id, url
+        6. Save files to R2
+        7. Save metadata to DB
+        8. Stream events throughout
+        """
         try:
-            # ── Smart parallel init ──
-            # Always run guardrail (even on follow-ups — user might ask a generic question mid-build).
-            # On first message: run guardrail + sandbox creation in parallel.
-            # On follow-ups: sandbox already exists, so guardrail is the only async call.
-            classification_task = asyncio.create_task(self._classify_prompt(prompt, openrouter_api_key, builder_model, project_id=id, is_first_message=is_first_message))
+            # Parallel: guardrail + sandbox creation (cancel sandbox if chat)
+            classification_task = asyncio.create_task(
+                self._classify_prompt(prompt, api_key, project_id, is_first_message=True)
+            )
+            sandbox_task = asyncio.create_task(self.get_e2b_sandbox(project_id))
 
-            if is_first_message:
-                # First message: start sandbox creation in parallel with guardrail
-                sandbox_task = asyncio.create_task(self.get_e2b_sandbox(id=id))
+            classification = await classification_task
 
-                classification = await classification_task
+            if classification == "chat":
+                sandbox_task.cancel()
+                try:
+                    await sandbox_task
+                except asyncio.CancelledError:
+                    pass
+                await self._handle_chat_response(prompt, project_id, event_queue, api_key)
+                return
 
-                if classification == "chat":
-                    sandbox_task.cancel()
-                    try:
-                        await sandbox_task
-                    except asyncio.CancelledError:
-                        print("Sandbox creation cancelled (chat query)")
-                    print(f"Prompt classified as chat: {prompt[:80]}")
-                    await self._handle_chat_response(prompt, id, event_queue, openrouter_api_key, builder_model)
-                    return
+            # Wait for sandbox (may already be done)
+            pre_sandbox = await sandbox_task
 
-                sandbox = await sandbox_task
-            else:
-                # Follow-up: sandbox likely exists already (fast reconnect)
-                classification = await classification_task
-
-                if classification == "chat":
-                    print(f"Follow-up classified as chat: {prompt[:80]}")
-                    await self._handle_chat_response(prompt, id, event_queue, openrouter_api_key, builder_model)
-                    return
-
-                sandbox = await self.get_e2b_sandbox(id=id)
-
-            event_queue.put_nowait({
-                "e": "started",
-                "message": "Starting LangGraph multi-agent workflow",
-            })
-
-            initial_state = {
-                "project_id": id,
-                "user_prompt": prompt,
-                "is_first_message": is_first_message,
-                "plan": None,
-                "files_created": [],
-                "scaffold_complete": False,
-                "build_passed": False,
-                "build_errors": "",
-                "fixer_retries": 0,
-                "max_fixer_retries": 2,
-                "current_node": "",
-                "execution_log": [],
-                "builder_model": builder_model,
-                "success": False,
-                "error_message": None,
-            }
-
-            print(f"Starting LangGraph workflow with prompt: {prompt}")
-            print(f"Project ID: {id}")
+            event_queue.put_nowait({"e": "started"})
+            event_queue.put_nowait({"e": "log", "message": "Building your application..."})
 
             workflow_start = time.time()
-            final_state = await self.workflow.ainvoke(
-                initial_state,
-                config={
-                    "configurable": {"sandbox": sandbox, "event_queue": event_queue, "openrouter_api_key": openrouter_api_key},
-                    "recursion_limit": 100,
-                },
+
+            # Run build agent
+            def on_build_event(event):
+                event_queue.put_nowait(event)
+
+            result = await asyncio.wait_for(
+                run_build_stream(prompt, api_key, on_build_event),
+                timeout=300,  # 5 minute timeout
             )
 
-            # Get the final URL
+            if not result["success"]:
+                error = result.get("error", "Build failed — no files generated.")
+                event_queue.put_nowait({"e": "error", "message": error})
+                await self._store_message(project_id, "assistant", error, "error")
+                return
+
+            generated_files = result["files"]
+            event_queue.put_nowait({"e": "log", "message": f"Created {len(generated_files)} files"})
+
+            # Assemble project (merge with base template)
+            project_files = assemble_project(generated_files)
+
+            # Create sandbox
+            event_queue.put_nowait({"e": "log", "message": "Setting up sandbox..."})
+
+            def on_sandbox_log(msg):
+                event_queue.put_nowait({"e": "log", "message": msg})
+
+            sandbox_result = await create_sandbox(project_files, on_log=on_sandbox_log)
+
+            sandbox = sandbox_result["sandbox"]
+            sandbox_id = sandbox_result["sandbox_id"]
+            url = sandbox_result["url"]
+
+            # Store sandbox reference
+            self.sandboxes[project_id] = sandbox
+            self.project_timestamps[project_id] = time.time()
+
+            # Save to DB
+            async with AsyncSessionLocal() as db:
+                result_db = await db.execute(select(Chat).where(Chat.id == project_id))
+                chat = result_db.scalar_one_or_none()
+                if chat:
+                    chat.app_url = url
+                await db.commit()
+
+            # Send completion
+            duration = round(time.time() - workflow_start, 2)
+            event_queue.put_nowait({
+                "e": "completed",
+                "success": True,
+                "url": url,
+                "duration_s": duration,
+            })
+
+            await self._store_message(project_id, "assistant", f"Build complete. Preview: {url}", "completed")
+
+            # Background: snapshot + save history
+            asyncio.create_task(self._post_build_cleanup(
+                project_id, prompt, True,
+                [f["path"] for f in generated_files],
+                sandbox_id,
+            ))
+
+        except asyncio.TimeoutError:
+            event_queue.put_nowait({"e": "error", "message": "Build timed out. Please try a simpler prompt."})
+        except Exception as e:
+            error_msg = str(e)
+            print(f"Build error: {error_msg}")
+            traceback.print_exc()
+
+            # Detect API errors
+            if "402" in error_msg or "credits" in error_msg.lower():
+                error_msg = "Insufficient API credits. Please add credits to your API provider."
+            elif "429" in error_msg or "rate" in error_msg.lower():
+                error_msg = "API rate limit reached. Please wait a moment and try again."
+            elif "401" in error_msg or "unauthorized" in error_msg.lower():
+                error_msg = "API authentication failed. Please check your API key."
+
+            event_queue.put_nowait({"e": "error", "message": error_msg})
+
+    async def handle_follow_up(self, message: str, api_key: str, project_id: str, event_queue: asyncio.Queue):
+        """Follow-up edit flow:
+        1. Classify prompt (guardrail)
+        2. Load current files from R2
+        3. Run edit agent -> get FileChange[]
+        4. Apply changes to current files
+        5. Validation loop (max 3 attempts):
+           a. Write temp files to sandbox
+           b. validate_sandbox_build()
+           c. If fail: run_error_fix_stream() -> apply fixes -> retry
+        6. Write final files to live sandbox
+        7. Save updated files to R2
+        """
+        try:
+            # Guardrail
+            classification = await self._classify_prompt(message, api_key, project_id, is_first_message=False)
+
+            if classification == "chat":
+                await self._handle_chat_response(message, project_id, event_queue, api_key)
+                return
+
+            event_queue.put_nowait({"e": "started"})
+
+            workflow_start = time.time()
+
+            # Get sandbox
+            sandbox = await self.get_e2b_sandbox(project_id)
+
+            # Load current files from R2
+            from utils.store import load_all_project_files
+            current_files = load_all_project_files(project_id)
+
+            if not current_files:
+                # Fallback: read from sandbox
+                find_result = await sandbox.commands.run(
+                    "find src public -type f 2>/dev/null",
+                    cwd="/home/user/react-app",
+                )
+                file_paths = [p.strip() for p in find_result.stdout.strip().split("\n") if p.strip()]
+                current_files = {}
+                for path in file_paths:
+                    try:
+                        content = await sandbox.files.read(f"/home/user/react-app/{path}")
+                        current_files[path] = content
+                    except Exception:
+                        pass
+
+            # Load chat history for context
+            chat_history = []
+            try:
+                async with AsyncSessionLocal() as db:
+                    from sqlalchemy import select as sa_select
+                    result = await db.execute(
+                        sa_select(Message)
+                        .where(Message.chat_id == project_id)
+                        .order_by(Message.created_at)
+                    )
+                    messages = result.scalars().all()
+                    for msg in messages[-10:]:  # Last 10 messages
+                        chat_history.append({"role": msg.role, "content": msg.content})
+            except Exception:
+                pass
+
+            # Run edit agent
+            def on_edit_event(event):
+                event_queue.put_nowait(event)
+
+            file_changes = await asyncio.wait_for(
+                run_edit_stream(current_files, message, chat_history, api_key, on_edit_event),
+                timeout=300,
+            )
+
+            if not file_changes:
+                event_queue.put_nowait({"e": "error", "message": "Edit agent produced no changes."})
+                return
+
+            # Apply changes to current files
+            for change in file_changes:
+                path = change["path"]
+                action = change.get("action", "modify")
+                if action == "delete":
+                    current_files.pop(path, None)
+                else:
+                    current_files[path] = change.get("content", "")
+
+            # Validation loop (max 3 attempts)
+            max_attempts = 3
+            for attempt in range(max_attempts):
+                event_queue.put_nowait({"e": "status", "message": f"Validating code{f' (attempt {attempt + 1}/{max_attempts})' if attempt > 0 else ''}..."})
+
+                # Write temp files to sandbox
+                await update_sandbox_files(sandbox, current_files)
+
+                # Validate build
+                build_result = await validate_sandbox_build(sandbox)
+
+                if build_result["success"]:
+                    break
+
+                if attempt < max_attempts - 1:
+                    # Run error fix
+                    event_queue.put_nowait({"e": "status", "message": f"Fixing errors (attempt {attempt + 1}/{max_attempts})..."})
+
+                    fixes = await run_error_fix_stream(
+                        current_files, build_result["errors"], api_key, on_edit_event
+                    )
+
+                    # Apply fixes
+                    for fix in fixes:
+                        path = fix["path"]
+                        action = fix.get("action", "modify")
+                        if action == "delete":
+                            current_files.pop(path, None)
+                        else:
+                            current_files[path] = fix.get("content", "")
+                else:
+                    event_queue.put_nowait({"e": "warning", "message": "Max retries reached, saving anyway"})
+
+            # Write final files to sandbox
+            await update_sandbox_files(sandbox, current_files)
+
+            # Get URL
             host = sandbox.get_host(port=5173)
             url = f"https://{host}"
 
-            # Deduplicate files
-            all_files = final_state.get('files_created', [])
-            unique_files = list(dict.fromkeys(all_files))
-
-            print(f"\nWorkflow completed. Project live at: {url}\n")
-            print(f"Workflow success: {final_state.get('success')}")
-            print(f"Files created: {unique_files}")
-
-            # ── Send completion event FIRST (user sees "ready" immediately) ──
-            async with AsyncSessionLocal() as db:
-                completion_message = Message(
-                    id=str(uuid.uuid4()),
-                    chat_id=id,
-                    role="assistant",
-                    content="LangGraph workflow completed" if final_state.get('success') else f"Workflow completed with errors: {final_state.get('error_message')}",
-                    event_type="completed",
-                )
-                db.add(completion_message)
-
-                result = await db.execute(select(Chat).where(Chat.id == id))
-                chat = result.scalar_one_or_none()
-                if chat:
-                    chat.app_url = url
-                    print(f"Saved app_url to database: {url}")
-
-                await db.commit()
-
-            # Build timing summary from execution_log
-            total_duration = round(time.time() - workflow_start, 2)
-            execution_log = final_state.get('execution_log', [])
-            node_timings = [
-                {"node": entry.get("node", "unknown"), "duration_s": entry.get("duration_s", 0), "status": entry.get("status", "unknown")}
-                for entry in execution_log
-                if "duration_s" in entry
-            ]
-
-            print(f"Total workflow duration: {total_duration}s")
-            print(f"Node timings: {node_timings}")
-
+            # Completion
+            duration = round(time.time() - workflow_start, 2)
             event_queue.put_nowait({
                 "e": "completed",
+                "success": True,
                 "url": url,
-                "success": final_state.get('success'),
-                "files_created": unique_files,
-                "duration_s": total_duration,
-                "node_timings": node_timings,
+                "duration_s": duration,
             })
 
-            # ── Background: snapshot + save history (non-blocking) ──
-            asyncio.create_task(self._post_workflow_cleanup(id, prompt, final_state.get('success', False), unique_files))
+            await self._store_message(project_id, "assistant", "Edit complete.", "completed")
 
+            # Background cleanup
+            asyncio.create_task(self._post_build_cleanup(
+                project_id, message, True,
+                [c["path"] for c in file_changes],
+                None,
+            ))
+
+        except asyncio.TimeoutError:
+            event_queue.put_nowait({"e": "error", "message": "Edit timed out. Please try a simpler request."})
         except Exception as e:
-            print(f"Error during LangGraph workflow execution: {e}")
-            print(f"Error type: {type(e)}")
+            error_msg = str(e)
+            print(f"Edit error: {error_msg}")
             traceback.print_exc()
+            event_queue.put_nowait({"e": "error", "message": error_msg})
 
-            try:
-                event_queue.put_nowait({
-                    "e": "error",
-                    "message": f"Workflow failed: {str(e)}"
-                })
-            except Exception as queue_err:
-                print(f"Failed to send error to event queue: {queue_err}")
+    # ── Helpers ──
 
-    async def _post_workflow_cleanup(self, project_id: str, user_prompt: str, success: bool, files_created: list):
-        """Background task: snapshot files + save conversation history after completion."""
+    async def _store_message(self, chat_id, role, content, event_type):
         try:
-            await self._save_conversation_history(
-                project_id=project_id,
-                user_prompt=user_prompt,
-                success=success,
-                files_created=files_created,
-            )
-            await self.snapshot_project_files(project_id=project_id)
+            async with AsyncSessionLocal() as db:
+                msg = Message(
+                    id=str(uuid.uuid4()),
+                    chat_id=chat_id,
+                    role=role,
+                    content=content,
+                    event_type=event_type,
+                )
+                db.add(msg)
+                await db.commit()
         except Exception as e:
-            print(f"Post-workflow cleanup error: {e}")
+            print(f"Failed to store message: {e}")
+
+    async def _post_build_cleanup(self, project_id, user_prompt, success, files_created, sandbox_id):
+        """Background: snapshot + save history + persist sandbox_id."""
+        try:
+            await self._save_conversation_history(project_id, user_prompt, success, files_created)
+            await self.snapshot_project_files(project_id)
+
+            # Persist sandbox_id for reconnection via metadata.json
+            if sandbox_id:
+                metadata = load_json_store(project_id, "metadata.json") or {}
+                metadata["sandbox_id"] = sandbox_id
+                metadata["files"] = files_created or metadata.get("files", [])
+                save_json_store(project_id, "metadata.json", metadata)
+
+        except Exception as e:
+            print(f"Post-build cleanup error: {e}")
 
 
 agent_service = Service()
