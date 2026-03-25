@@ -14,7 +14,7 @@ import {
 import { BuildProgress } from "@/components/chat/BuildProgress";
 import { consolidateMessages } from "@/lib/chat-utils";
 import { handleSSEMessage } from "@/lib/sse-handlers";
-import type { Message, ActiveToolCall, BuildStage } from "@/lib/chat-types";
+import type { Message, ActiveToolCall, BuildStage, FileActivity } from "@/lib/chat-types";
 
 export default function ChatIdPage() {
   const params = useParams();
@@ -39,6 +39,7 @@ export default function ChatIdPage() {
   const [isRestartingSandbox, setIsRestartingSandbox] = useState(false);
   const [isSending, setIsSending] = useState(false);
   const [buildStage, setBuildStage] = useState<BuildStage | null>(null);
+  const [fileActivities, setFileActivities] = useState<FileActivity[]>([]);
   const [deployedUrl, setDeployedUrl] = useState<string | null>(null);
   const [isLoadingFiles, setIsLoadingFiles] = useState(false);
 
@@ -228,6 +229,7 @@ export default function ChatIdPage() {
             setUserData,
             consolidateMessages,
             currentTool,
+            setFileActivities,
           });
         };
 

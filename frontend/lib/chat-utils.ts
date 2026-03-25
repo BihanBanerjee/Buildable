@@ -86,15 +86,11 @@ export function consolidateMessages(msgs: Message[]): Message[] {
   let currentAssistantGroup: Message | null = null;
 
   const assistantEventTypes = [
-    "thinking",
-    "tool_started",
-    "tool_completed",
-    "tool_summary",
-    "planner_complete",
-    "builder_complete",
-    "validator_complete",
-    "description",
-    "summary",
+    "log",
+    "token",
+    "status",
+    "warning",
+    "chat_response",
   ];
 
   const filterOutEvents = ["started"];
@@ -122,20 +118,10 @@ export function consolidateMessages(msgs: Message[]): Message[] {
       }
 
       if (!msg.event_type || assistantEventTypes.includes(msg.event_type)) {
-        const isRichContent =
-          msg.event_type === "description" || msg.event_type === "summary";
-        const keepContent = isRichContent
-          ? msg.content.trim()
-          : isCleanContent(msg.content)
-            ? msg.content.trim()
-            : "";
+        const keepContent = msg.content?.trim() || "";
 
         if (currentAssistantGroup) {
-          if (msg.event_type === "description" && keepContent) {
-            currentAssistantGroup.content = keepContent;
-          } else if (msg.event_type === "summary" && keepContent) {
-            currentAssistantGroup.summary = keepContent;
-          } else if (keepContent) {
+          if (keepContent) {
             currentAssistantGroup.content = currentAssistantGroup.content
               ? currentAssistantGroup.content + "\n" + keepContent
               : keepContent;
@@ -155,7 +141,6 @@ export function consolidateMessages(msgs: Message[]): Message[] {
           currentAssistantGroup = {
             ...msg,
             content: keepContent,
-            event_type: "thinking",
           };
         }
       } else {

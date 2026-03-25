@@ -6,6 +6,7 @@ export interface Message {
   created_at: string;
   event_type?: string;
   isCompleted?: boolean;
+  isSuccess?: boolean;
   isProgress?: boolean;
   summary?: string;
   buildDuration?: number;

@@ -1,27 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import { Loader2, CheckCircle2, AlertCircle, Clock } from "lucide-react";
-
-interface ToolCall {
-  name: string;
-  status: "success" | "error" | "running";
-  output?: string;
-  detail?: string;
-  input?: string;
-}
-
-interface Message {
-  id: string;
-  role: "user" | "assistant";
-  content: string;
-  formatted?: string;
-  event_type?: string;
-  isCompleted?: boolean;
-  isSuccess?: boolean;
-  isProgress?: boolean;
-  summary?: string;
-  buildDuration?: number;
-  tool_calls?: ToolCall[];
-}
+import type { Message } from "@/lib/chat-types";
 
 interface MessageBubbleProps {
   message: Message;
@@ -29,15 +8,10 @@ interface MessageBubbleProps {
 }
 
 const TOOL_LABELS: Record<string, string> = {
-  create_file: "Created",
-  read_file: "Read",
-  edit_file: "Edited",
-  write_file: "Updated",
-  delete_file: "Deleted",
-  execute_command: "Ran",
-  list_directory: "Listed",
-  check_missing_packages: "Checked packages",
-  get_context: "Loaded context",
+  create_app: "Generated files",
+  modify_app: "Modified files",
+  chat_message: "Sent message",
+  web_search: "Searched web",
   save_context: "Saved context",
   write_multiple_files: "Wrote",
 };
