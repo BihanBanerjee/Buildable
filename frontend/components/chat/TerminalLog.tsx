@@ -8,6 +8,16 @@ interface TerminalLogProps {
   isBuilding: boolean;
 }
 
+const FALLBACK_STEPS = [
+  "Understanding your request",
+  "Designing component structure",
+  "Writing React components",
+  "Styling with Tailwind CSS",
+  "Wiring up state and logic",
+  "Assembling your application",
+  "Optimizing output",
+];
+
 function formatElapsed(seconds: number): string {
   if (seconds < 60) return `${seconds}s`;
   const mins = Math.floor(seconds / 60);
@@ -28,12 +38,16 @@ export function TerminalLog({ logs, isBuilding }: TerminalLogProps) {
   const startRef = useRef(Date.now());
   const [elapsed, setElapsed] = useState(0);
   const [dots, setDots] = useState("");
+  const [fallbackIndex, setFallbackIndex] = useState(0);
+  const lastLogCountRef = useRef(0);
 
   // Reset timer when a new build starts
   useEffect(() => {
     if (isBuilding && logs.length <= 1) {
       startRef.current = Date.now();
       setElapsed(0);
+      setFallbackIndex(0);
+      lastLogCountRef.current = 0;
     }
   }, [isBuilding, logs.length]);
 
@@ -54,6 +68,20 @@ export function TerminalLog({ logs, isBuilding }: TerminalLogProps) {
     }, 500);
     return () => clearInterval(id);
   }, [isBuilding]);
+
+  // Cycle fallback steps every 4s when no new real logs arrive
+  useEffect(() => {
+    if (!isBuilding) return;
+    const id = setInterval(() => {
+      if (logs.length === lastLogCountRef.current) {
+        // No new logs — advance fallback
+        setFallbackIndex((i) => (i + 1) % FALLBACK_STEPS.length);
+      } else {
+        lastLogCountRef.current = logs.length;
+      }
+    }, 4000);
+    return () => clearInterval(id);
+  }, [isBuilding, logs.length]);
 
   // Auto-scroll to bottom
   useEffect(() => {
@@ -133,7 +161,7 @@ export function TerminalLog({ logs, isBuilding }: TerminalLogProps) {
 
         {isBuilding && (
           <div className="text-muted-foreground/60 py-px">
-            Working{dots}
+            {FALLBACK_STEPS[fallbackIndex]}{dots}
           </div>
         )}
       </div>
