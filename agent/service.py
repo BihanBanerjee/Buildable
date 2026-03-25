@@ -278,10 +278,21 @@ class Service:
         """Answer a non-build prompt conversationally."""
         from langchain_core.messages import SystemMessage, HumanMessage
         from .agent import create_edit_llm
+        from utils.store import load_all_project_files
+
+        # Load project files for context (if any exist)
+        project_files = load_all_project_files(project_id)
+        if project_files:
+            file_list = "\n".join(f"  - {path}" for path in sorted(project_files.keys()))
+            project_context = f"The user has a project with these files:\n{file_list}"
+        else:
+            project_context = "The user has not built a project yet."
+
+        system_prompt = CHAT_RESPONSE_PROMPT.format(project_context=project_context)
 
         llm = create_edit_llm(api_key)
         messages = [
-            SystemMessage(content=CHAT_RESPONSE_PROMPT),
+            SystemMessage(content=system_prompt),
             HumanMessage(content=prompt),
         ]
         response = await llm.ainvoke(messages)
@@ -414,6 +425,10 @@ class Service:
                 sandbox_id,
             ))
 
+        except asyncio.CancelledError:
+            print(f"Build cancelled for {project_id}")
+            event_queue.put_nowait({"e": "cancelled", "message": "Build cancelled by user"})
+            raise
         except asyncio.TimeoutError:
             event_queue.put_nowait({"e": "error", "message": "Build timed out. Please try a simpler prompt."})
         except Exception as e:
@@ -589,6 +604,10 @@ class Service:
                 None,
             ))
 
+        except asyncio.CancelledError:
+            print(f"Edit cancelled for {project_id}")
+            event_queue.put_nowait({"e": "cancelled", "message": "Build cancelled by user"})
+            raise
         except asyncio.TimeoutError:
             event_queue.put_nowait({"e": "error", "message": "Edit timed out. Please try a simpler request."})
         except Exception as e:

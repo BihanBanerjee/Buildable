@@ -148,8 +148,6 @@ async def run_build_stream(
         HumanMessage(content=prompt),
     ]
 
-    on_event({"e": "log", "message": "Building your application..."})
-
     graph = _build_graph(api_key)
 
     # Accumulate all messages so we can extract files after the stream ends.

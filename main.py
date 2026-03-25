@@ -501,11 +501,11 @@ async def cancel_build(
             await task
         except (asyncio.CancelledError, Exception):
             pass
-
-    # Send a cancelled event so the frontend knows
-    event_queue = active_streams.get(id)
-    if event_queue:
-        await event_queue.put({"e": "cancelled", "message": "Build cancelled by user"})
+    else:
+        # No active task — send cancelled event directly
+        event_queue = active_streams.get(id)
+        if event_queue:
+            await event_queue.put({"e": "cancelled", "message": "Build cancelled by user"})
 
     return {"status": "cancelled"}
 
