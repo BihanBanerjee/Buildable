@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
-import { Loader2, CheckCircle2, AlertCircle, Clock } from "lucide-react";
+import { Loader2, CheckCircle2, AlertCircle, Clock, FileCode2, ChevronDown, ChevronRight } from "lucide-react";
 import type { Message } from "@/lib/chat-types";
 
 interface MessageBubbleProps {
@@ -162,6 +162,60 @@ function renderMarkdown(text: string): React.ReactNode[] {
   return elements;
 }
 
+function BuildSummaryCard({ message }: { message: Message }) {
+  const [expanded, setExpanded] = useState(false);
+  const files = message.buildFiles || [];
+  const isSuccess = message.isSuccess !== false;
+
+  return (
+    <div className="mt-3 pt-3 border-t border-border">
+      {/* Status row */}
+      <div className="flex items-center gap-2">
+        {isSuccess ? (
+          <>
+            <CheckCircle2 size={15} className="text-primary shrink-0" />
+            <span className="text-sm text-primary font-medium">Your app is ready</span>
+          </>
+        ) : (
+          <>
+            <AlertCircle size={15} className="text-orange-400 shrink-0" />
+            <span className="text-sm text-orange-400 font-medium">Build completed with errors</span>
+          </>
+        )}
+        {message.buildDuration && (
+          <span className="inline-flex items-center gap-1 text-xs text-muted-foreground ml-auto tabular-nums">
+            <Clock size={11} className="shrink-0" />
+            {formatDuration(message.buildDuration)}
+          </span>
+        )}
+      </div>
+
+      {/* File list (only shown when build metadata is available) */}
+      {files.length > 0 && (
+        <div className="mt-2.5">
+          <button
+            onClick={() => setExpanded(!expanded)}
+            className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground/70 transition-colors"
+          >
+            {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+            <FileCode2 size={12} />
+            <span>{files.length} file{files.length !== 1 ? "s" : ""}</span>
+          </button>
+          {expanded && (
+            <div className="mt-1.5 pl-5 space-y-0.5">
+              {files.map((file, i) => (
+                <div key={i} className="text-xs text-muted-foreground font-mono truncate">
+                  {file}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function MessageBubble({ message, isLastMessage }: MessageBubbleProps) {
   if (message.role === "user") {
     return (
@@ -245,29 +299,7 @@ export function MessageBubble({ message, isLastMessage }: MessageBubbleProps) {
         )}
 
         {message.isCompleted && (
-          <div className="flex items-center gap-2 mt-3 pt-3 border-t border-border">
-            {message.isSuccess !== false ? (
-              <>
-                <CheckCircle2 size={15} className="text-primary shrink-0" />
-                <span className="text-sm text-primary font-medium">
-                  Your app is ready
-                </span>
-              </>
-            ) : (
-              <>
-                <AlertCircle size={15} className="text-orange-400 shrink-0" />
-                <span className="text-sm text-orange-400 font-medium">
-                  Build completed with errors
-                </span>
-              </>
-            )}
-            {message.buildDuration && (
-              <span className="inline-flex items-center gap-1 text-xs text-muted-foreground ml-auto tabular-nums">
-                <Clock size={11} className="shrink-0" />
-                {formatDuration(message.buildDuration)}
-              </span>
-            )}
-          </div>
+          <BuildSummaryCard message={message} />
         )}
 
         {showThinking && (

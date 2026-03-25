@@ -7,7 +7,7 @@ import {
   ChatNavbar,
   ChatInputBox,
   StatusBadge,
-  PromotionBanner,
+  ExamplePrompts,
 } from "@/components/chat";
 
 export default function ChatPage() {
@@ -139,7 +139,7 @@ export default function ChatPage() {
           )}
         </div>
 
-        <PromotionBanner />
+        <ExamplePrompts onSelect={setInput} />
       </div>
     </div>
   );

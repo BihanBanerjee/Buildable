@@ -416,7 +416,16 @@ class Service:
                 "duration_s": duration,
             })
 
-            await self._store_message(project_id, "assistant", f"Build complete. Preview: {url}", "completed")
+            build_summary = [{
+                "name": "build_summary",
+                "status": "success",
+                "detail": f"{len(generated_files)} files generated",
+                "output": json.dumps({
+                    "duration_s": duration,
+                    "files": sorted(f["path"] for f in generated_files),
+                }),
+            }]
+            await self._store_message(project_id, "assistant", f"Build complete. Preview: {url}", "completed", tool_calls=build_summary)
 
             # Background: snapshot + save history
             asyncio.create_task(self._post_build_cleanup(
@@ -595,7 +604,16 @@ class Service:
                 "duration_s": duration,
             })
 
-            await self._store_message(project_id, "assistant", "Edit complete.", "completed")
+            edit_summary = [{
+                "name": "build_summary",
+                "status": "success",
+                "detail": f"{len(file_changes)} files modified",
+                "output": json.dumps({
+                    "duration_s": duration,
+                    "files": sorted(c["path"] for c in file_changes),
+                }),
+            }]
+            await self._store_message(project_id, "assistant", "Edit complete.", "completed", tool_calls=edit_summary)
 
             # Background cleanup
             asyncio.create_task(self._post_build_cleanup(
@@ -618,7 +636,7 @@ class Service:
 
     # ── Helpers ──
 
-    async def _store_message(self, chat_id, role, content, event_type):
+    async def _store_message(self, chat_id, role, content, event_type, tool_calls=None):
         try:
             async with AsyncSessionLocal() as db:
                 msg = Message(
@@ -627,6 +645,7 @@ class Service:
                     role=role,
                     content=content,
                     event_type=event_type,
+                    tool_calls=tool_calls,
                 )
                 db.add(msg)
                 await db.commit()

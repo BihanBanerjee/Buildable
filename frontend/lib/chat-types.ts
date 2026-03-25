@@ -10,6 +10,7 @@ export interface Message {
   isProgress?: boolean;
   summary?: string;
   buildDuration?: number;
+  buildFiles?: string[];
   tool_calls?: Array<{
     name: string;
     status: "success" | "error" | "running";
