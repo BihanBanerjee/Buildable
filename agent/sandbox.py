@@ -145,7 +145,11 @@ async def validate_sandbox_build(sandbox: AsyncSandbox) -> dict:
     """
     try:
         result = await asyncio.wait_for(
-            sandbox.commands.run("npm run build 2>&1", cwd=BASE_PATH, timeout=60),
+            sandbox.commands.run(
+                "npm run build",
+                cwd=BASE_PATH,
+                timeout=60,
+            ),
             timeout=70,
         )
 
@@ -162,6 +166,14 @@ async def validate_sandbox_build(sandbox: AsyncSandbox) -> dict:
         return {"success": False, "errors": errors}
 
     except Exception as e:
-        error_msg = f"Build validation error: {str(e)}"
-        print(error_msg)
+        # E2B may throw on non-zero exit — try to extract output from the exception
+        error_msg = str(e) or "Unknown build error"
+        stdout = getattr(e, 'stdout', '') or ''
+        stderr = getattr(e, 'stderr', '') or ''
+        if stdout or stderr:
+            error_msg = (stdout + "\n" + stderr).strip()
+        # Keep last 40 lines
+        error_lines = error_msg.split("\n")
+        error_msg = "\n".join(error_lines[-40:]) or "Build failed with unknown error"
+        print(f"Build validation error:\n{error_msg[:500]}")
         return {"success": False, "errors": error_msg}
