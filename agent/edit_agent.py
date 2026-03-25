@@ -11,7 +11,8 @@ import logging
 from typing import Any, Callable
 
 from langchain_core.messages import AIMessage, SystemMessage, HumanMessage, ToolMessage
-from langgraph.graph import StateGraph, MessagesAnnotation, END
+from langgraph.graph import StateGraph, END
+from langgraph.graph.message import MessagesState
 from langgraph.prebuilt import ToolNode
 
 from .agent import create_edit_llm
@@ -90,7 +91,7 @@ def _build_edit_graph(api_key: str):
     tool_node = ToolNode(edit_tools)
 
     workflow = (
-        StateGraph(MessagesAnnotation)
+        StateGraph(MessagesState)
         .add_node("agent", agent_node)
         .add_node("tools", tool_node)
         .add_edge("__start__", "agent")

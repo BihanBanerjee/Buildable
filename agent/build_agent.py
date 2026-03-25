@@ -12,7 +12,8 @@ import re
 from typing import Any, Callable
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
-from langgraph.graph import END, MessagesAnnotation, StateGraph
+from langgraph.graph import END, StateGraph
+from langgraph.graph.message import MessagesState
 from langgraph.prebuilt import ToolNode
 
 from .agent import create_build_llm
@@ -49,7 +50,7 @@ def _build_graph(api_key: str):
         return "tools"
 
     graph = (
-        StateGraph(MessagesAnnotation)
+        StateGraph(MessagesState)
         .add_node("agent", agent_node)
         .add_node("tools", tool_node)
         .add_edge("__start__", "agent")
