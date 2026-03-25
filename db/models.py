@@ -50,7 +50,7 @@ class Chat(Base):
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     app_url: Mapped[Optional[str]] = mapped_column(String(1024), nullable=True)
     deployed_url: Mapped[Optional[str]] = mapped_column(String(1024), nullable=True)
-    model_choice: Mapped[str] = mapped_column(String(100), nullable=False, default="google/gemini-2.5-pro", server_default="google/gemini-2.5-pro")
+
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)

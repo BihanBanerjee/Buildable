@@ -40,7 +40,7 @@ export interface Project {
   title: string;
   app_url: string | null;
   deployed_url: string | null;
-  model_choice: string;
+
   created_at: string;
 }
 

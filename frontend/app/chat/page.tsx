@@ -16,7 +16,7 @@ export default function ChatPage() {
   const [error, setError] = useState("");
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [userData, setUserData] = useState<UserData | null>(null);
-  const [modelChoice, setModelChoice] = useState("google/gemini-2.5-pro");
+
   const router = useRouter();
 
   useEffect(() => {
@@ -67,7 +67,7 @@ export default function ChatPage() {
     setError("");
 
     try {
-      const response = await chatApi.createChat(input.trim(), modelChoice);
+      const response = await chatApi.createChat(input.trim());
       router.push(`/chat/${response.chat_id}`);
     } catch (err) {
       console.error("Error creating chat:", err);
@@ -116,30 +116,6 @@ export default function ChatPage() {
             onInputChange={setInput}
             onSubmit={handleSubmit}
           />
-
-          {/* Model selector */}
-          <div className="mt-3 flex items-center gap-2 flex-wrap">
-            <span className="text-xs text-muted-foreground">Builder model:</span>
-            <div className="flex items-center gap-1 rounded-lg border border-border p-1">
-              {[
-                { id: "google/gemini-2.5-pro", label: "Gemini 2.5 Pro" },
-                { id: "anthropic/claude-sonnet-4", label: "Claude Sonnet 4" },
-              ].map((m) => (
-                <button
-                  key={m.id}
-                  type="button"
-                  onClick={() => setModelChoice(m.id)}
-                  className={`px-3 py-1 rounded-md text-xs font-medium transition-all ${
-                    modelChoice === m.id
-                      ? "bg-primary/15 text-primary"
-                      : "text-muted-foreground hover:text-foreground"
-                  }`}
-                >
-                  {m.label}
-                </button>
-              ))}
-            </div>
-          </div>
 
           {/* API key banner */}
           {userData && !userData.has_openrouter_key && (

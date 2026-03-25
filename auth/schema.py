@@ -42,7 +42,7 @@ class ProjectResponse(BaseModel):
     title: str
     app_url: Optional[str] = None
     deployed_url: Optional[str] = None
-    model_choice: str
+
     created_at: datetime
 
 
