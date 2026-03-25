@@ -1,316 +1,105 @@
-from e2b_code_interpreter import AsyncSandbox
-import asyncio
-import re
-from langchain_core.tools import tool
+"""
+Agent tools — pure data tools that do NOT touch the sandbox.
+
+Build agent tools:  create_app, web_search
+Edit agent tools:   modify_app, chat_message, web_search
+"""
+
 import os
-from datetime import datetime
-from utils.store import save_json_store, load_json_store
-from .base_template import LOCKED_FILES
+from langchain_core.tools import tool
 
 
-async def check_missing_packages_standalone(sandbox: AsyncSandbox) -> list[str]:
-    """Deterministic package check — no LLM, just shell commands.
+def _normalize_file_content(content: str) -> str:
+    """Normalize escaped newlines in file content."""
+    if not isinstance(content, str):
+        return ""
+    if "\\n" in content:
+        return content.replace("\\n", "\n").replace('\\"', '"')
+    return content
 
-    Returns a list of missing package names (empty if all deps are installed).
+
+# ── Build agent tool ──────────────────────────────────────
+
+@tool
+def create_app(files: list[dict]) -> dict:
+    """Generate project files. ALWAYS call this tool to output code.
+
+    Args:
+        files: List of {path: str, content: str} dicts.
     """
-    try:
-        result = await sandbox.commands.run(
-            "grep -roh \"from ['\\\"][^'\\\"]*['\\\"]\" src/ 2>/dev/null"
-            " | sed \"s/from ['\\\"]//;s/['\\\"]//\" | grep -v '^\\.'"
-            " | sort -u",
-            cwd="/home/user/react-app",
-            timeout=15,
-        )
-        # Extract package names: @scope/name for scoped, name for regular
-        imported = set()
-        for line in result.stdout.strip().split("\n"):
-            line = line.strip()
-            if not line:
-                continue
-            if line.startswith("@"):
-                # Scoped package: @hello-pangea/dnd -> @hello-pangea/dnd
-                parts = line.split("/")
-                if len(parts) >= 2:
-                    imported.add(f"{parts[0]}/{parts[1]}")
-            else:
-                # Regular package: date-fns/format -> date-fns
-                imported.add(line.split("/")[0])
+    if not isinstance(files, list):
+        return {"files": []}
 
-        pkg_result = await sandbox.commands.run(
-            "node -e \"const p=require('./package.json'); console.log(Object.keys(p.dependencies||{}).join('\\n'))\"",
-            cwd="/home/user/react-app",
-            timeout=10,
-        )
-        installed = {p.strip() for p in pkg_result.stdout.strip().split("\n") if p.strip()}
+    normalized = [
+        {"path": f["path"], "content": _normalize_file_content(f["content"])}
+        for f in files
+        if isinstance(f, dict) and "path" in f and "content" in f
+    ]
 
-        builtin = {"react", "react-dom", "react-router-dom", "react-icons"}
-        return sorted(imported - installed - builtin)
-
-    except Exception as e:
-        print(f"check_missing_packages_standalone failed: {e}")
-        return []
+    print(f"Tool: create_app — Generated {len(normalized)} files")
+    return {"files": normalized}
 
 
-# Regex for validating fixer npm install commands
-_NPM_INSTALL_RE = re.compile(r"^npm install [a-zA-Z0-9@/._-]+( [a-zA-Z0-9@/._-]+)*$")
+# ── Edit agent tools ──────────────────────────────────────
 
+@tool
+def modify_app(files: list[dict]) -> dict:
+    """Modify, create, or delete files in an existing project.
 
-def create_tools(
-    sandbox: AsyncSandbox,
-    event_queue: asyncio.Queue,
-    project_id: str = None,
-    files_tracker: list = None,
-    mode: str = "first_build",
-):
-    """Create tools for a specific agent mode.
-
-    Modes:
-      - "first_build":  create_file, write_multiple_files  (2 tools — no exec, scaffold handles deps)
-      - "follow_up":    read_file, edit_file, create_file, execute_command, list_directory, get_context, save_context  (7 tools — edit_file for surgical changes)
-      - "fixer":        read_file, create_file, execute_command (restricted to npm install only)  (3 tools)
+    Args:
+        files: List of {path: str, content: str, action: "create"|"modify"|"delete"} dicts.
+               Output COMPLETE file content for create/modify actions.
     """
+    if not isinstance(files, list):
+        return {"files": [], "success": False}
 
-    def safe_send_event(queue: asyncio.Queue, data: dict) -> bool:
-        try:
-            if queue:
-                queue.put_nowait(data)
-            return True
-        except Exception as e:
-            print(f"safe_send_event failed: {e}")
-            return False
+    normalized = [
+        {
+            "path": f["path"],
+            "content": "" if f.get("action") == "delete" else _normalize_file_content(f.get("content", "")),
+            "action": f.get("action", "modify"),
+        }
+        for f in files
+        if isinstance(f, dict) and "path" in f
+    ]
 
-    # ── Core tools ───────────────────────────────────────────
+    print(f"Tool: modify_app — Processing {len(normalized)} file changes")
+    return {"success": True, "files": normalized}
 
-    @tool
-    async def create_file(file_path: str, content: str) -> str:
-        """Create/overwrite a file. Path relative to root, e.g. "src/App.jsx"."""
-        try:
-            # Prevent overwriting locked base template files
-            if file_path in LOCKED_FILES:
-                return f"ERROR: {file_path} is a locked base template file and cannot be modified."
 
-            full_path = os.path.join("/home/user/react-app", file_path)
-            await sandbox.files.write(full_path, content)
-            if files_tracker is not None:
-                files_tracker.append(file_path)
-            safe_send_event(event_queue, {"e": "file_created", "message": f"Created {file_path}"})
-            return f"File {file_path} created successfully."
-        except Exception as e:
-            safe_send_event(event_queue, {"e": "file_error", "message": f"Failed to create {file_path}: {str(e)}"})
-            return f"Failed to create file {file_path}: {str(e)}"
+@tool
+def chat_message(message: str) -> dict:
+    """Send a chat message to the user.
 
-    @tool
-    async def read_file(file_path: str) -> str:
-        """Read a file. Path relative to root, e.g. "src/App.jsx"."""
-        try:
-            full_path = os.path.join("/home/user/react-app", file_path)
-            content = await sandbox.files.read(full_path)
-            safe_send_event(event_queue, {"e": "file_read", "message": f"Read {file_path}"})
-            return f"Content from {file_path}:\n{content}"
-        except Exception as e:
-            safe_send_event(event_queue, {"e": "file_error", "message": f"Failed to read {file_path}: {str(e)}"})
-            return f"Failed to read file {file_path}: {str(e)}"
+    Args:
+        message: The message to display to the user.
+    """
+    return {"type": "chat", "message": message}
 
-    @tool
-    async def execute_command(command: str) -> str:
-        """Run a shell command in react-app dir."""
-        try:
-            # Fixer mode: ONLY allow "npm install <packages>"
-            if mode == "fixer":
-                if not _NPM_INSTALL_RE.match(command.strip()):
-                    return "ERROR: Fixer can only run 'npm install <package>' commands. Use read_file and create_file for code fixes."
 
-            safe_send_event(event_queue, {"e": "command_started", "command": command})
-            result = await sandbox.commands.run(command, cwd="/home/user/react-app", timeout=120)
+# ── Web search (re-export) ───────────────────────────────
 
-            status = "command_executed" if result.exit_code == 0 else "command_failed"
-            safe_send_event(event_queue, {
-                "e": status, "command": command,
-                "exit_code": result.exit_code,
-                "stdout": result.stdout[:500] if result.stdout else "",
-                "stderr": result.stderr[:500] if result.stderr else "",
-            })
-
-            if result.exit_code == 0:
-                return f"OK: {result.stdout[:500]}"
-            else:
-                return f"FAIL (exit {result.exit_code}): {result.stderr[:500]}"
-
-        except Exception as e:
-            safe_send_event(event_queue, {"e": "command_error", "command": command, "message": str(e)})
-            return f"ERROR: {str(e)}"
-
-    @tool
-    async def write_multiple_files(files: list[dict]) -> str:
-        """Batch-write files. Each item: {"path":"src/...","data":"content"}. Preferred for multiple files."""
-        try:
-            invalid = [i for i, f in enumerate(files) if "path" not in f or "data" not in f]
-            if invalid:
-                return (
-                    f"ERROR: files[{invalid}] missing required 'path' or 'data' key. "
-                    "Each entry must be {\"path\": \"src/...\", \"data\": \"...content...\"}."
-                )
-
-            file_objects = [
-                {
-                    "path": os.path.join("/home/user/react-app", f["path"]),
-                    "data": f["data"],
-                }
-                for f in files
-            ]
-
-            await sandbox.files.write_files(file_objects)
-
-            file_names = [f["path"] for f in files]
-            if files_tracker is not None:
-                files_tracker.extend(file_names)
-
-            # Emit per-file events so the frontend shows each file appearing
-            for fname in file_names:
-                safe_send_event(event_queue, {
-                    "e": "file_created",
-                    "message": f"Created {fname}",
-                })
-            return f"Successfully created {len(file_names)} files: {', '.join(file_names)}"
-
-        except Exception as e:
-            safe_send_event(event_queue, {
-                "e": "file_error",
-                "message": f"Failed to create multiple files: {str(e)}",
-            })
-            return f"Failed to create multiple files: {str(e)}"
-
-    @tool
-    async def edit_file(file_path: str, old_content: str, new_content: str) -> str:
-        """Edit a file by replacing old_content with new_content. Use for surgical edits to existing files.
-        The old_content must match EXACTLY (including whitespace/indentation).
-        For multiple edits to the same file, call this tool multiple times."""
-        try:
-            full_path = os.path.join("/home/user/react-app", file_path)
-            current = await sandbox.files.read(full_path)
-
-            if old_content not in current:
-                # Try trimmed match as fallback
-                trimmed_current = current.strip()
-                trimmed_old = old_content.strip()
-                if trimmed_old in trimmed_current:
-                    current = current.replace(old_content.strip(), new_content.strip())
-                else:
-                    return (
-                        f"ERROR: old_content not found in {file_path}. "
-                        "Make sure it matches exactly (read the file first). "
-                        f"File length: {len(current)} chars."
-                    )
-            else:
-                current = current.replace(old_content, new_content, 1)
-
-            await sandbox.files.write(full_path, current)
-            if files_tracker is not None and file_path not in files_tracker:
-                files_tracker.append(file_path)
-            safe_send_event(event_queue, {"e": "file_edited", "message": f"Edited {file_path}"})
-            return f"File {file_path} edited successfully."
-        except Exception as e:
-            safe_send_event(event_queue, {"e": "file_error", "message": f"Failed to edit {file_path}: {str(e)}"})
-            return f"Failed to edit file {file_path}: {str(e)}"
-
-    @tool
-    async def list_directory(path: str = ".") -> str:
-        """List directory tree (excludes node_modules)."""
-        try:
-            cmd = f"tree -I 'node_modules|.*' {path}"
-            result = await sandbox.commands.run(cmd, cwd="/home/user/react-app", timeout=30)
-            safe_send_event(event_queue, {"e": "command_executed", "command": cmd})
-            if result.exit_code == 0:
-                return f"Directory structure:\n{result.stdout}"
-            return f"Failed: {result.stderr}"
-        except Exception as e:
-            return f"Failed to list directory: {str(e)}"
-
-    @tool
-    def get_context() -> str:
-        """Retrieve saved project context from previous sessions."""
-        if not project_id:
-            return "No project ID available"
-        try:
-            context = load_json_store(project_id, "context.json")
-            if not context:
-                return "No previous context found."
-
-            result = "=== PROJECT CONTEXT ===\n\n"
-            if context.get("semantic"):
-                result += f"WHAT THIS PROJECT IS:\n{context['semantic']}\n\n"
-            if context.get("procedural"):
-                result += f"HOW THINGS WORK:\n{context['procedural']}\n\n"
-            if context.get("episodic"):
-                result += f"WHAT HAS BEEN DONE:\n{context['episodic']}\n\n"
-            if context.get("files_created"):
-                result += f"FILES CREATED: {len(context['files_created'])} files\n"
-                result += f"   {', '.join(context['files_created'][:10])}"
-                if len(context["files_created"]) > 10:
-                    result += f" ... and {len(context['files_created']) - 10} more"
-                result += "\n\n"
-            if context.get("conversation_history"):
-                result += "CONVERSATION HISTORY:\n"
-                for i, conv in enumerate(context["conversation_history"][-5:], 1):
-                    status = "[OK]" if conv.get("success") else "[FAIL]"
-                    result += f"   {i}. {status} {conv.get('user_prompt', '')[:80]}\n"
-            return result
-        except Exception as e:
-            return f"Failed to retrieve context: {str(e)}"
-
-    @tool
-    def save_context(semantic: str, procedural: str = "", episodic: str = "") -> str:
-        """Save project context. semantic=what, procedural=how, episodic=done."""
-        if not project_id:
-            return "No project ID available"
-        try:
-            existing = load_json_store(project_id, "context.json")
-            context = {
-                "semantic": semantic or existing.get("semantic", ""),
-                "procedural": procedural or existing.get("procedural", ""),
-                "episodic": episodic or existing.get("episodic", ""),
-                "last_updated": datetime.now().isoformat(),
-                "files_created": existing.get("files_created", []),
-                "conversation_history": existing.get("conversation_history", []),
-            }
-            save_json_store(project_id, "context.json", context)
-            return f"Context saved for project {project_id}."
-        except Exception as e:
-            return f"Failed to save context: {str(e)}"
-
-    # ── Assemble tool list by mode ───────────────────────────
-
-    # Web search tool (optional — only available if SERPER_API_KEY is set)
-    web_search_tool = None
+def get_web_search_tool():
+    """Return web_search tool if SERPER_API_KEY is configured."""
     if os.getenv("SERPER_API_KEY"):
         from .web_search import create_web_search_tool
-        web_search_tool = create_web_search_tool()
+        return create_web_search_tool()
+    return None
 
-    if mode == "first_build":
-        tools = [create_file, write_multiple_files]
-        if web_search_tool:
-            tools.insert(0, web_search_tool)
-        return tools
 
-    elif mode == "first_build_fallback":
-        # Scaffold failed — builder needs everything to self-recover
-        tools = [
-            create_file, write_multiple_files, read_file,
-            execute_command, list_directory,
-        ]
-        if web_search_tool:
-            tools.insert(0, web_search_tool)
-        return tools
+def get_build_tools() -> list:
+    """Tools for the build agent: create_app + web_search."""
+    tools = [create_app]
+    ws = get_web_search_tool()
+    if ws:
+        tools.append(ws)
+    return tools
 
-    elif mode == "follow_up":
-        return [
-            read_file, edit_file, create_file,
-            execute_command, list_directory,
-            get_context, save_context,
-        ]
 
-    elif mode == "fixer":
-        return [read_file, create_file, execute_command]
-
-    else:
-        raise ValueError(f"Unknown tool mode: {mode}")
+def get_edit_tools() -> list:
+    """Tools for the edit agent: modify_app + chat_message + web_search."""
+    tools = [modify_app, chat_message]
+    ws = get_web_search_tool()
+    if ws:
+        tools.append(ws)
+    return tools
