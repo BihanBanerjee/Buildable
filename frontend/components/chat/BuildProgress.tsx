@@ -7,11 +7,8 @@ interface BuildProgressProps {
 }
 
 const STAGES: { key: BuildStage; label: string }[] = [
-  { key: "enhancer", label: "Understanding" },
-  { key: "planner", label: "Planning" },
-  { key: "builder", label: "Building" },
-  { key: "validator", label: "Validating" },
-  { key: "app_check", label: "Testing" },
+  { key: "building", label: "Building" },
+  { key: "validating", label: "Validating" },
 ];
 
 function getStageIndex(stage: BuildStage | null): number {

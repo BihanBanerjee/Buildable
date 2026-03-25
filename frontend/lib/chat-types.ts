@@ -39,13 +39,13 @@ export interface SSEMessage {
   [key: string]: unknown;
 }
 
-export type BuildStage =
-  | "enhancer"
-  | "planner"
-  | "builder"
-  | "validator"
-  | "app_check"
-  | "completed";
+export type BuildStage = "building" | "validating" | "completed";
+
+export interface FileActivity {
+  path: string;
+  action: string;
+  timestamp: number;
+}
 
 export interface SSEHandlers {
   setCurrentTool: (tool: ActiveToolCall | null) => void;
@@ -59,4 +59,5 @@ export interface SSEHandlers {
   setUserData: (data: any) => void;
   consolidateMessages: (messages: Message[]) => Message[];
   currentTool: ActiveToolCall | null;
+  setFileActivities?: React.Dispatch<React.SetStateAction<FileActivity[]>>;
 }

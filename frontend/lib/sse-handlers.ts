@@ -1,159 +1,117 @@
 import type { SSEMessage, SSEHandlers } from "./chat-types";
 
-function extractToolDetail(
-  name: string,
-  input: Record<string, any> | undefined,
-): string {
-  if (!input || typeof input !== "object") return "";
-
-  switch (name) {
-    case "create_file":
-    case "read_file":
-    case "write_file":
-    case "delete_file":
-    case "edit_file":
-      return input.file_path || input.path || "";
-    case "execute_command":
-      return input.command || "";
-    case "list_directory":
-      return input.path || input.directory || ".";
-    case "write_multiple_files": {
-      const raw = input.files;
-      if (!raw) return "";
-      try {
-        const files = typeof raw === "string" ? JSON.parse(raw) : raw;
-        if (Array.isArray(files)) {
-          const paths = files
-            .map((f: any) => f.path || f.file_path || "")
-            .filter(Boolean);
-          return paths.join(", ");
-        }
-      } catch { /* ignore */ }
-      const str = typeof raw === "string" ? raw : JSON.stringify(raw);
-      const matches = [...str.matchAll(/"path"\s*:\s*"([^"]+)"/g)];
-      if (matches.length > 0) return matches.map((m) => m[1]).join(", ");
-      return "";
-    }
-    default:
-      return "";
-  }
-}
-
 export function handleSSEMessage(event: MessageEvent, handlers: SSEHandlers) {
   try {
     const data: SSEMessage = JSON.parse(event.data);
     console.log("SSE:", data.e || data.type);
 
-    if (data.e === "tool_started") {
-      const toolName = (data.tool_name as string) || "Unknown Tool";
-      const toolInput = data.tool_input as Record<string, any> | undefined;
-      const detail = extractToolDetail(toolName, toolInput);
-      const input = toolInput ? JSON.stringify(toolInput) : undefined;
-
-      handlers.setCurrentTool({ name: toolName, status: "running" });
-
+    // ── log events → show as progress messages ──
+    if (data.e === "log") {
+      const logMessage = (data.message as string) || "";
+      if (!logMessage) return;
       handlers.setMessages((prev) => {
-        if (prev.length === 0) return prev;
         const lastMsg = prev[prev.length - 1];
-        if (lastMsg.role === "assistant") {
-          return [
-            ...prev.slice(0, -1),
-            {
-              ...lastMsg,
-              isProgress: false,
-              tool_calls: [
-                ...(lastMsg.tool_calls || []),
-                { name: toolName, status: "running" as const, detail, input },
-              ],
-            },
-          ];
+        if (lastMsg?.role === "assistant") {
+          return [...prev.slice(0, -1), { ...lastMsg, content: logMessage, isProgress: true }];
         }
-        return [
-          ...prev,
-          {
-            id: Date.now().toString() + "-assistant",
-            role: "assistant" as const,
-            content: "",
-            created_at: new Date().toISOString(),
-            event_type: "tool_started",
-            tool_calls: [{ name: toolName, status: "running" as const, detail, input }],
-          },
-        ];
+        return [...prev, {
+          id: Date.now().toString() + "-log",
+          role: "assistant" as const,
+          content: logMessage,
+          created_at: new Date().toISOString(),
+          event_type: "log",
+          isProgress: true,
+        }];
       });
       return;
     }
 
-    if (data.e === "tool_completed") {
-      const toolName =
-        (data.tool_name as string) || handlers.currentTool?.name || "Tool";
-      const toolOutput = data.tool_output || "Completed";
-
-      handlers.setCurrentTool(null);
-
-      handlers.setMessages((prev) =>
-        prev.map((msg) => {
-          if (msg.role === "assistant" && msg.tool_calls) {
-            const lastRunningIdx = msg.tool_calls
-              .map((t, i) =>
-                t.name === toolName && t.status === "running" ? i : -1,
-              )
-              .filter((i) => i >= 0)
-              .pop();
-
-            if (lastRunningIdx !== undefined && lastRunningIdx >= 0) {
-              const updated = [...msg.tool_calls];
-              updated[lastRunningIdx] = {
-                ...updated[lastRunningIdx],
-                status: "success" as const,
-                output:
-                  typeof toolOutput === "string"
-                    ? toolOutput
-                    : JSON.stringify(toolOutput),
-              };
-              return { ...msg, tool_calls: updated };
-            }
-          }
-          return msg;
-        }),
-      );
+    // ── token events → streamed LLM text ──
+    if (data.e === "token") {
+      const content = (data.content as string) || "";
+      if (!content) return;
+      handlers.setMessages((prev) => {
+        const lastMsg = prev[prev.length - 1];
+        if (lastMsg?.role === "assistant" && !lastMsg.isProgress) {
+          return [...prev.slice(0, -1), { ...lastMsg, content: (lastMsg.content || "") + content }];
+        }
+        return [...prev, {
+          id: Date.now().toString() + "-token",
+          role: "assistant" as const,
+          content: content,
+          created_at: new Date().toISOString(),
+          event_type: "token",
+        }];
+      });
       return;
     }
 
-    if (
-      data.e === "started" ||
-      data.e === "builder_started" ||
-      data.e === "scaffold_started" ||
-      data.e === "workflow_started" ||
-      data.e === "planner_started"
-    ) {
-      handlers.setIsSending(false);
-      handlers.setIsBuilding(true);
+    // ── file_update events → file activity tracking ──
+    if (data.e === "file_update") {
+      const file = data.file as { path: string; action: string } | undefined;
+      if (!file?.path) return;
+      handlers.setFileActivities?.((prev) => [
+        ...prev,
+        { path: file.path, action: file.action || "modify", timestamp: Date.now() },
+      ]);
+      return;
     }
 
-    // Track build stage for the progress stepper
-    if (data.e === "enhancer_started") handlers.setBuildStage("enhancer");
-    if (data.e === "planner_started") handlers.setBuildStage("planner");
-    if (data.e === "scaffold_started" || data.e === "builder_started") handlers.setBuildStage("builder");
-    if (data.e === "code_validator_started") handlers.setBuildStage("validator");
-    if (data.e === "app_check_started") handlers.setBuildStage("app_check");
+    // ── status events → validation progress ──
+    if (data.e === "status") {
+      const statusMsg = (data.message as string) || "";
+      if (!statusMsg) return;
+      handlers.setBuildStage?.("validating");
+      handlers.setMessages((prev) => {
+        const lastMsg = prev[prev.length - 1];
+        if (lastMsg?.role === "assistant" && lastMsg.isProgress) {
+          return [...prev.slice(0, -1), { ...lastMsg, content: statusMsg }];
+        }
+        return [...prev, {
+          id: Date.now().toString() + "-status",
+          role: "assistant" as const,
+          content: statusMsg,
+          created_at: new Date().toISOString(),
+          event_type: "status",
+          isProgress: true,
+        }];
+      });
+      return;
+    }
+
+    // ── warning events ──
+    if (data.e === "warning") {
+      const warnMsg = (data.message as string) || "";
+      if (!warnMsg) return;
+      handlers.setMessages((prev) => [...prev, {
+        id: Date.now().toString() + "-warn",
+        role: "assistant" as const,
+        content: `⚠️ ${warnMsg}`,
+        created_at: new Date().toISOString(),
+        event_type: "warning",
+      }]);
+      return;
+    }
+
+    // ── started → begin build ──
+    if (data.e === "started") {
+      handlers.setIsSending(false);
+      handlers.setIsBuilding(true);
+      handlers.setBuildStage("building");
+    }
 
     if (data.url) {
       handlers.setIsBuilding(false);
       handlers.pollUrlUntilReady(data.url);
     }
 
+    // ── cancelled ──
     if (data.e === "cancelled") {
       handlers.setIsBuilding(false);
       handlers.setCurrentTool(null);
       handlers.setBuildStage(null);
       handlers.setMessages((prev) => {
         return prev.map((msg, idx) => {
-          if (msg.role === "assistant" && msg.tool_calls) {
-            const resolvedCalls = msg.tool_calls.map((t) =>
-              t.status === "running" ? { ...t, status: "success" as const } : t,
-            );
-            return { ...msg, tool_calls: resolvedCalls };
-          }
           if (idx === prev.length - 1 && msg.role === "assistant") {
             return { ...msg, content: msg.content || "Build cancelled." };
           }
@@ -163,35 +121,22 @@ export function handleSSEMessage(event: MessageEvent, handlers: SSEHandlers) {
       return;
     }
 
-    if (data.e === "completed" || data.e === "workflow_completed") {
+    // ── completed ──
+    if (data.e === "completed") {
       handlers.setIsBuilding(false);
       handlers.setCurrentTool(null);
       handlers.setBuildStage("completed");
 
       const duration = (data.duration_s as number) || undefined;
-      const isSuccess = data.success !== false; // default to true if not specified
+      const isSuccess = data.success !== false;
 
-      // If workflow failed, show error
       if (!isSuccess) {
         const errorMsg = "Build completed with errors. Some features may not work correctly.";
         handlers.setError(errorMsg);
       }
 
-      // Mark last message as completed AND force-resolve any stuck tool_calls
       handlers.setMessages((prev) => {
         return prev.map((msg, idx) => {
-          if (msg.role === "assistant" && msg.tool_calls) {
-            const resolvedCalls = msg.tool_calls.map((t) =>
-              t.status === "running" ? { ...t, status: "success" as const } : t,
-            );
-            const updates: Record<string, unknown> = { tool_calls: resolvedCalls };
-            if (idx === prev.length - 1) {
-              updates.isCompleted = true;
-              updates.isSuccess = isSuccess;
-              if (duration) updates.buildDuration = duration;
-            }
-            return { ...msg, ...updates };
-          }
           if (idx === prev.length - 1 && msg.role === "assistant") {
             return { ...msg, isCompleted: true, isSuccess, ...(duration ? { buildDuration: duration } : {}) };
           }
@@ -205,6 +150,7 @@ export function handleSSEMessage(event: MessageEvent, handlers: SSEHandlers) {
       }
     }
 
+    // ── history ──
     if (data.e === "history" && data.messages) {
       const consolidatedMessages = handlers.consolidateMessages(data.messages);
       handlers.setMessages(consolidatedMessages);
@@ -214,6 +160,7 @@ export function handleSSEMessage(event: MessageEvent, handlers: SSEHandlers) {
       return;
     }
 
+    // ── error ──
     if (data.e === "error") {
       const errorMessage = (data.message as string) || "An error occurred";
       handlers.setError(errorMessage);
@@ -221,7 +168,6 @@ export function handleSSEMessage(event: MessageEvent, handlers: SSEHandlers) {
       handlers.setIsSending(false);
       handlers.setBuildStage("completed");
 
-      // Show error as a message in the chat
       handlers.setMessages((prev) => {
         const lastMsg = prev[prev.length - 1];
         if (lastMsg?.role === "assistant") {
@@ -244,6 +190,7 @@ export function handleSSEMessage(event: MessageEvent, handlers: SSEHandlers) {
       return;
     }
 
+    // ── chat_response (non-build replies) ──
     if (data.e === "chat_response") {
       const message = (data.message as string) || "";
       if (!message) return;
@@ -263,229 +210,6 @@ export function handleSSEMessage(event: MessageEvent, handlers: SSEHandlers) {
             content: message,
             created_at: new Date().toISOString(),
             event_type: "chat_response",
-          },
-        ];
-      });
-      return;
-    }
-
-    if (data.e === "thinking") {
-      handlers.setMessages((prev) => {
-        const lastMsg = prev[prev.length - 1];
-        if (lastMsg?.role === "assistant") return prev;
-        return [
-          ...prev,
-          {
-            id: Date.now().toString() + "-assistant",
-            role: "assistant" as const,
-            content: "Analyzing your request...",
-            created_at: new Date().toISOString(),
-            event_type: "thinking",
-          },
-        ];
-      });
-      return;
-    }
-
-    // Progress pulses during long code generation — show animated writing status
-    if (data.e === "progress") {
-      const progressText = (data.message as string) || "Generating code...";
-
-      handlers.setMessages((prev) => {
-        const lastMsg = prev[prev.length - 1];
-        // Update content of existing assistant message (even if it has tool_calls)
-        if (lastMsg?.role === "assistant") {
-          return [
-            ...prev.slice(0, -1),
-            { ...lastMsg, content: progressText, isProgress: true },
-          ];
-        }
-        return prev;
-      });
-      return;
-    }
-
-    // Show node-transition status messages so the user sees progress
-    if (
-      data.e === "enhancer_started" ||
-      data.e === "planner_started" ||
-      data.e === "scaffold_started" ||
-      data.e === "builder_started" ||
-      data.e === "code_validator_started" ||
-      data.e === "app_check_started"
-    ) {
-      const statusText = (data.message as string) || "";
-      if (statusText) {
-        handlers.setMessages((prev) => {
-          const lastMsg = prev[prev.length - 1];
-          if (lastMsg?.role === "assistant" && !lastMsg.tool_calls?.length) {
-            return [...prev.slice(0, -1), { ...lastMsg, content: statusText }];
-          }
-          return [
-            ...prev,
-            {
-              id: Date.now().toString() + "-status",
-              role: "assistant" as const,
-              content: statusText,
-              created_at: new Date().toISOString(),
-              event_type: "status",
-            },
-          ];
-        });
-      }
-      return;
-    }
-
-    if (
-      data.e === "builder_complete" ||
-      data.e === "code_validator_complete" ||
-      data.e === "app_check_complete"
-    ) {
-      return;
-    }
-
-    if (data.e === "description") {
-      const description = (data.message as string) || "";
-      if (!description) return;
-
-      handlers.setMessages((prev) => {
-        const lastMsg = prev[prev.length - 1];
-        if (lastMsg?.role === "assistant") {
-          return [...prev.slice(0, -1), { ...lastMsg, content: description }];
-        }
-        return [
-          ...prev,
-          {
-            id: Date.now().toString() + "-desc",
-            role: "assistant" as const,
-            content: description,
-            created_at: new Date().toISOString(),
-            event_type: "description",
-          },
-        ];
-      });
-      return;
-    }
-
-    if (data.e === "summary") {
-      const summary = (data.message as string) || "";
-      if (!summary) return;
-
-      handlers.setMessages((prev) => {
-        const lastMsg = prev[prev.length - 1];
-        if (lastMsg?.role === "assistant") {
-          return [...prev.slice(0, -1), { ...lastMsg, summary }];
-        }
-        return prev;
-      });
-      return;
-    }
-
-    if (data.e === "file_created" || data.e === "file_edited") {
-      const fileMsg = (data.message as string) || "";
-      if (!fileMsg) return;
-
-      handlers.setMessages((prev) => {
-        const lastMsg = prev[prev.length - 1];
-        if (lastMsg?.role === "assistant" && lastMsg.event_type === "file_activity") {
-          const existing = lastMsg.content || "";
-          return [
-            ...prev.slice(0, -1),
-            { ...lastMsg, content: existing + "\n" + fileMsg },
-          ];
-        }
-        return [
-          ...prev,
-          {
-            id: Date.now().toString() + "-file",
-            role: "assistant" as const,
-            content: fileMsg,
-            created_at: new Date().toISOString(),
-            event_type: "file_activity",
-          },
-        ];
-      });
-      return;
-    }
-
-    if (data.e === "files_created") {
-      const fileMsg = (data.message as string) || "";
-      if (!fileMsg) return;
-
-      handlers.setMessages((prev) => {
-        const lastMsg = prev[prev.length - 1];
-        if (lastMsg?.role === "assistant" && lastMsg.event_type === "file_activity") {
-          return [
-            ...prev.slice(0, -1),
-            { ...lastMsg, content: fileMsg },
-          ];
-        }
-        return [
-          ...prev,
-          {
-            id: Date.now().toString() + "-files",
-            role: "assistant" as const,
-            content: fileMsg,
-            created_at: new Date().toISOString(),
-            event_type: "file_activity",
-          },
-        ];
-      });
-      return;
-    }
-
-    if (data.e === "planner_complete") {
-      const plan = data.content || data.plan;
-      let title = "Planning complete";
-      let details = "";
-
-      if (plan && typeof plan === "object") {
-        const overview =
-          (plan as any).applicationOverview ||
-          (plan as any).application_overview ||
-          (plan as any).overview;
-        if (overview) {
-          const t =
-            typeof overview === "object"
-              ? (overview as any).title || (overview as any).purpose
-              : String(overview);
-          if (t) title = String(t).substring(0, 150);
-        } else if ((plan as any).title) {
-          title = String((plan as any).title).substring(0, 150);
-        }
-
-        const components = (plan as any).components as string[] | undefined;
-        const pages = (plan as any).pages as string[] | undefined;
-        const deps = (plan as any).dependencies as string[] | undefined;
-
-        const parts: string[] = [];
-        if (pages?.length) parts.push(`${pages.length} page${pages.length > 1 ? "s" : ""}`);
-        if (components?.length) parts.push(`${components.length} components`);
-        if (deps?.length) parts.push(`${deps.length} dependencies`);
-
-        if (parts.length > 0) {
-          details = parts.join(" · ");
-        }
-        if (components?.length) {
-          details += "\n" + components.join(", ");
-        }
-      }
-
-      const content = details ? `${title}\n${details}` : title;
-
-      handlers.setMessages((prev) => {
-        const lastMsg = prev[prev.length - 1];
-        if (lastMsg?.role === "assistant") {
-          return [...prev.slice(0, -1), { ...lastMsg, content }];
-        }
-        return [
-          ...prev,
-          {
-            id: Date.now().toString() + "-plan",
-            role: "assistant" as const,
-            content,
-            created_at: new Date().toISOString(),
-            event_type: "planner_complete",
           },
         ];
       });
