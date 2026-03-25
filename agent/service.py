@@ -24,6 +24,7 @@ from db.models import Chat, Message
 from utils.store import load_json_store, save_json_store
 
 from .assembler import assemble_project
+from .base_template import LOCKED_FILES
 from .build_agent import run_build_stream
 from .edit_agent import run_edit_stream, run_error_fix_stream
 from .sandbox import (
@@ -473,9 +474,12 @@ class Service:
                 event_queue.put_nowait({"e": "error", "message": "Edit agent produced no changes."})
                 return
 
-            # Apply changes to current files
+            # Apply changes to current files (skip locked base template files)
             for change in file_changes:
                 path = change["path"]
+                if path in LOCKED_FILES:
+                    print(f"Skipping locked file from edit: {path}")
+                    continue
                 action = change.get("action", "modify")
                 if action == "delete":
                     current_files.pop(path, None)
@@ -504,9 +508,12 @@ class Service:
                         current_files, build_result["errors"], api_key, on_edit_event
                     )
 
-                    # Apply fixes
+                    # Apply fixes (skip locked base template files)
                     for fix in fixes:
                         path = fix["path"]
+                        if path in LOCKED_FILES:
+                            print(f"Skipping locked file from error fix: {path}")
+                            continue
                         action = fix.get("action", "modify")
                         if action == "delete":
                             current_files.pop(path, None)
