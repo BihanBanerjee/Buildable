@@ -231,6 +231,7 @@ export default function ChatIdPage() {
             consolidateMessages,
             setFileActivities,
             setBuildLogs,
+            setDeployedUrl,
           });
         };
 

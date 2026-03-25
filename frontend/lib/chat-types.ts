@@ -62,4 +62,5 @@ export interface SSEHandlers {
   consolidateMessages: (messages: Message[]) => Message[];
   setFileActivities?: React.Dispatch<React.SetStateAction<FileActivity[]>>;
   setBuildLogs?: React.Dispatch<React.SetStateAction<string[]>>;
+  setDeployedUrl?: (url: string | null) => void;
 }

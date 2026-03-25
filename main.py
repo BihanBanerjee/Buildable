@@ -539,6 +539,7 @@ async def sse_stream(
             raise HTTPException(status_code=403, detail="Unauthorized: Chat belongs to another user")
 
         chat_app_url = chat.app_url
+        chat_deployed_url = chat.deployed_url
 
     # Reuse existing queue if agent is already running, otherwise create new
     event_queue = active_streams.get(id)
@@ -573,7 +574,8 @@ async def sse_stream(
                         }
                         for msg in messages
                     ],
-                    "app_url": chat_app_url
+                    "app_url": chat_app_url,
+                    "deployed_url": chat_deployed_url
                 }
 
             yield f"data: {json.dumps(history_event)}\n\n"

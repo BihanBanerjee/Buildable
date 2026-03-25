@@ -167,6 +167,9 @@ export function handleSSEMessage(event: MessageEvent, handlers: SSEHandlers) {
       if (data.app_url) {
         handlers.setAppUrl(data.app_url);
       }
+      if (data.deployed_url) {
+        handlers.setDeployedUrl?.(data.deployed_url as string);
+      }
       return;
     }
 
