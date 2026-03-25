@@ -90,6 +90,17 @@ Design: slate-950 background, emerald-500 accent, Geist + JetBrains Mono fonts.
 
 **Cloudflare Pages Deployment** (`utils/cloudflare.py`): Project names capped at 28 chars to avoid SSL cert issues with hash-prefixed subdomains.
 
+## E2B Sandbox Template
+
+The project uses a custom E2B template (`wk3zdgmi2618nihwhp12`, name: `buildable-react`) with `node_modules` pre-installed to speed up sandbox creation. Config files: `e2b.toml`, `e2b.Dockerfile`, `e2b-package.json`.
+
+**IMPORTANT:** `e2b-package.json` must stay in sync with the `package.json` inside `agent/base_template.py`. When updating base template dependencies:
+1. Update `BASE_TEMPLATE["package.json"]` in `agent/base_template.py`
+2. Update `e2b-package.json` to match
+3. Rebuild the template: `e2b template build --dockerfile e2b.Dockerfile`
+
+If these drift apart, the pre-installed `node_modules` won't match and `npm install` will run a full install, defeating the purpose of the custom template.
+
 ## Environment Variables
 
 Required in `.env`: `DATABASE_URL`, `SECRET_KEY`, `E2B_API_KEY`. Optional: `E2B_TEMPLATE_ID`, `R2_ACCESS_KEY`, `R2_SECRET_KEY`, `R2_ENDPOINT`, `R2_BUCKET_NAME`. See `.env` for full list.
