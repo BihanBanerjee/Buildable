@@ -1,0 +1,17 @@
+# This is a config for E2B sandbox template.
+# You can use template ID (wk3zdgmi2618nihwhp12) or template name (buildable-react) to create a sandbox:
+
+# Python SDK
+# from e2b import Sandbox, AsyncSandbox
+# sandbox = Sandbox.create("buildable-react") # Sync sandbox
+# sandbox = await AsyncSandbox.create("buildable-react") # Async sandbox
+
+# JS SDK
+# import { Sandbox } from 'e2b'
+# const sandbox = await Sandbox.create('buildable-react')
+
+team_id = "99b70ed4-e9cc-493d-8378-0a190bae4c69"
+start_cmd = ""
+dockerfile = "e2b.Dockerfile"
+template_name = "buildable-react"
+template_id = "wk3zdgmi2618nihwhp12"
