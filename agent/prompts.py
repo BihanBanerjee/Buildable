@@ -1,4 +1,4 @@
-from agent.base_template import BASE_TEMPLATE, LOCKED_FILES
+from agent.base_template import LOCKED_FILES
 
 
 # ---------------------------------------------------------------------------

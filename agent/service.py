@@ -349,7 +349,7 @@ class Service:
                 return
 
             # Wait for sandbox (may already be done)
-            pre_sandbox = await sandbox_task
+            await sandbox_task
 
             event_queue.put_nowait({"e": "started"})
 
