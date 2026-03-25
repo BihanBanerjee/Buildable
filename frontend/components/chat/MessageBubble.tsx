@@ -176,7 +176,7 @@ export function MessageBubble({ message, isLastMessage }: MessageBubbleProps) {
   const cleanContent = getCleanContent(message.content);
   const hasToolCalls = message.tool_calls && message.tool_calls.length > 0;
   const hasSummary = !!message.summary;
-  const showThinking = !cleanContent && !hasToolCalls && isLastMessage;
+  const showThinking = !cleanContent && !hasToolCalls && !message.isCompleted && isLastMessage;
   const isError = message.event_type === "error";
 
   if (isError) {

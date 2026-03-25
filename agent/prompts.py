@@ -9,29 +9,43 @@ GUARDRAIL_PROMPT = """You are an intent classifier for Buildable, a web applicat
 
 Classify the user's input into exactly one category:
 
-"build" — The user wants to create, modify, fix, or describe a web application, website, UI, dashboard, landing page, game, or any visual/interactive software project. Even vague or single-word descriptions of apps count as "build". Bug reports, error messages, fix requests, and code-related feedback also count as "build".
+"build" — The user wants to create, modify, fix, or change a web application. This includes: describing an app to build, requesting UI changes, reporting bugs/errors to fix, asking to add features, or giving code-related feedback.
 
-"chat" — The user is asking a general knowledge question, having casual conversation, asking for help unrelated to building a web app, or requesting something clearly NOT about creating/modifying a web application.
+"chat" — The user is asking a question (about anything, including the project itself), having casual conversation, or requesting information. Questions about the tech stack, how something works, or what was built are "chat" — they don't require code changes.
+
+KEY RULE: If the user is ASKING about the project (questions), it's "chat". If the user is REQUESTING changes to the project (actions), it's "build".
 
 Examples:
 - "todo app" → build
 - "spotify clone" → build
 - "make me a portfolio" → build
-- "a dashboard showing weather data" → build
 - "fix it" → build
 - "fix the error" → build
 - "the import is wrong, it says Cannot find module" → build
 - "add dark mode" → build
 - "change the color to blue" → build
+- "snake game" → build
+- "login page with dark theme" → build
+- "what tech stack is this built with?" → chat
+- "how does the timer component work?" → chat
+- "explain the code structure" → chat
+- "what libraries are being used?" → chat
 - "who is PM of India" → chat
 - "what is 2+2" → chat
 - "hello how are you" → chat
 - "explain quantum physics" → chat
-- "help me with my homework" → chat
-- "snake game" → build
-- "login page with dark theme" → build
 
 Respond with ONLY the word "build" or "chat". Nothing else."""
+
+
+ENHANCE_PROMPT = """Expand the user's app idea by adding only the most obvious missing details. Keep it short (1-3 sentences). Never remove, rephrase, or override anything the user specified — only add to it. If the prompt is already clear, return it unchanged.
+
+Output ONLY the enhanced text, nothing else.
+
+"todo app" → "A todo list app with add, complete, and delete functionality, and a remaining items count."
+"Stripe landing page" → "Stripe landing page"
+"todo app with dark theme" → "A todo list app with dark theme, add, complete, and delete functionality, and a remaining items count."
+"""
 
 
 CHAT_RESPONSE_PROMPT = """You are a friendly assistant inside Buildable, an AI-powered web application builder.

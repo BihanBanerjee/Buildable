@@ -5,24 +5,11 @@ export function handleSSEMessage(event: MessageEvent, handlers: SSEHandlers) {
     const data: SSEMessage = JSON.parse(event.data);
     console.log("SSE:", data.e || data.type);
 
-    // ── log events → show as progress messages ──
+    // ── log events → accumulate in build logs for terminal display ──
     if (data.e === "log") {
       const logMessage = (data.message as string) || "";
       if (!logMessage) return;
-      handlers.setMessages((prev) => {
-        const lastMsg = prev[prev.length - 1];
-        if (lastMsg?.role === "assistant") {
-          return [...prev.slice(0, -1), { ...lastMsg, content: logMessage, isProgress: true }];
-        }
-        return [...prev, {
-          id: Date.now().toString() + "-log",
-          role: "assistant" as const,
-          content: logMessage,
-          created_at: new Date().toISOString(),
-          event_type: "log",
-          isProgress: true,
-        }];
-      });
+      handlers.setBuildLogs?.((prev) => [...prev, logMessage]);
       return;
     }
 
@@ -62,20 +49,7 @@ export function handleSSEMessage(event: MessageEvent, handlers: SSEHandlers) {
       const statusMsg = (data.message as string) || "";
       if (!statusMsg) return;
       handlers.setBuildStage?.("validating");
-      handlers.setMessages((prev) => {
-        const lastMsg = prev[prev.length - 1];
-        if (lastMsg?.role === "assistant" && lastMsg.isProgress) {
-          return [...prev.slice(0, -1), { ...lastMsg, content: statusMsg }];
-        }
-        return [...prev, {
-          id: Date.now().toString() + "-status",
-          role: "assistant" as const,
-          content: statusMsg,
-          created_at: new Date().toISOString(),
-          event_type: "status",
-          isProgress: true,
-        }];
-      });
+      handlers.setBuildLogs?.((prev) => [...prev, statusMsg]);
       return;
     }
 
@@ -98,6 +72,7 @@ export function handleSSEMessage(event: MessageEvent, handlers: SSEHandlers) {
       handlers.setIsSending(false);
       handlers.setIsBuilding(true);
       handlers.setBuildStage("building");
+      handlers.setBuildLogs?.([]); // Reset logs for new build
     }
 
     if (data.url) {
@@ -110,6 +85,7 @@ export function handleSSEMessage(event: MessageEvent, handlers: SSEHandlers) {
       handlers.setIsBuilding(false);
       handlers.setCurrentTool(null);
       handlers.setBuildStage(null);
+      handlers.setBuildLogs?.([]);
       handlers.setMessages((prev) => {
         return prev.map((msg, idx) => {
           if (idx === prev.length - 1 && msg.role === "assistant") {
@@ -123,36 +99,54 @@ export function handleSSEMessage(event: MessageEvent, handlers: SSEHandlers) {
 
     // ── completed ──
     if (data.e === "completed") {
+      const wasBuild = !!handlers.currentBuildStage;
+
       handlers.setIsBuilding(false);
       handlers.setCurrentTool(null);
       handlers.setBuildStage("completed");
+      handlers.setBuildLogs?.([]);
+      handlers.setIsSending(false);
 
-      const duration = (data.duration_s as number) || undefined;
-      const isSuccess = data.success !== false;
+      // Only show "Your app is ready" for actual builds, not chat responses
+      if (wasBuild) {
+        const duration = (data.duration_s as number) || undefined;
+        const isSuccess = data.success !== false;
 
-      if (!isSuccess) {
-        const errorMsg = "Build completed with errors. Some features may not work correctly.";
-        handlers.setError(errorMsg);
-      }
+        if (!isSuccess) {
+          const errorMsg = "Build completed with errors. Some features may not work correctly.";
+          handlers.setError(errorMsg);
+        }
 
-      handlers.setMessages((prev) => {
-        // Remove trailing progress messages (e.g. "Validating code...")
-        const cleaned = prev.filter((msg, idx) => {
-          if (idx >= prev.length - 3 && msg.isProgress) return false;
-          return true;
-        });
+        handlers.setMessages((prev) => {
+          const cleaned = prev.filter((msg) => !msg.isProgress);
 
-        // Find the last assistant message to mark as completed
-        const lastAssistantIdx = cleaned.findLastIndex(
-          (msg) => msg.role === "assistant"
-        );
-        return cleaned.map((msg, idx) => {
-          if (idx === lastAssistantIdx) {
-            return { ...msg, isCompleted: true, isSuccess, isProgress: false, ...(duration ? { buildDuration: duration } : {}) };
+          // Mark the last assistant message as completed
+          const lastAssistantIdx = cleaned.findLastIndex(
+            (msg) => msg.role === "assistant"
+          );
+
+          if (lastAssistantIdx >= 0) {
+            return cleaned.map((msg, idx) => {
+              if (idx === lastAssistantIdx) {
+                return { ...msg, isCompleted: true, isSuccess, isProgress: false, ...(duration ? { buildDuration: duration } : {}) };
+              }
+              return msg;
+            });
           }
-          return msg;
+
+          // No assistant message exists — create one
+          return [...cleaned, {
+            id: Date.now().toString() + "-done",
+            role: "assistant" as const,
+            content: "Build complete.",
+            created_at: new Date().toISOString(),
+            event_type: "completed",
+            isCompleted: true,
+            isSuccess,
+            ...(duration ? { buildDuration: duration } : {}),
+          }];
         });
-      });
+      }
 
       const updatedUser = localStorage.getItem("user_data");
       if (updatedUser) {
@@ -177,6 +171,7 @@ export function handleSSEMessage(event: MessageEvent, handlers: SSEHandlers) {
       handlers.setIsBuilding(false);
       handlers.setIsSending(false);
       handlers.setBuildStage("completed");
+      handlers.setBuildLogs?.([]);
 
       handlers.setMessages((prev) => {
         const lastMsg = prev[prev.length - 1];

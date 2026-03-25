@@ -7,7 +7,7 @@ export { MessageBubble } from "./MessageBubble";
 export { ToolCallsDropdown } from "./ToolCallsDropdown";
 export { PreviewPanel } from "./PreviewPanel";
 export { ChatInput } from "./ChatInput";
-export { BuildProgress } from "./BuildProgress";
+export { TerminalLog } from "./TerminalLog";
 export { FilesList } from "./FilesList";
 export { FileViewer } from "./FileViewer";
 export { FormattedMessage } from "./FormattedMessage";

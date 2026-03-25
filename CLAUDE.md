@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Buildable is an AI-powered web application builder that converts natural language descriptions into production-ready React apps. Users describe what they want, a multi-agent LangGraph system plans and builds the code, and an E2B sandbox runs it live. The backend is FastAPI (Python 3.12+, managed with [uv](https://docs.astral.sh/uv/)), the frontend is Next.js 16 with React 19 and Tailwind CSS v4.
+Buildable is an AI-powered web application builder that converts natural language descriptions into production-ready React apps. Users describe what they want, a 2-agent LangGraph system generates the code, and an E2B sandbox runs it live. The backend is FastAPI (Python 3.12+, managed with [uv](https://docs.astral.sh/uv/)), the frontend is Next.js 16 with React 19 and Tailwind CSS v4.
 
 ## Commands
 
@@ -28,32 +28,40 @@ Buildable is an AI-powered web application builder that converts natural languag
 
 **FastAPI server** (`main.py`) exposes REST + SSE endpoints. Key routes:
 - `POST /chat` — create project, start agent, returns SSE stream
-- `POST /chat/{id}/message` — follow-up message to existing project
-- `GET /chat/stream/{chat_id}` — SSE endpoint for real-time agent events
+- `POST /chats/{id}/messages` — follow-up message to existing project
+- `GET /sse/{chat_id}` — SSE endpoint for real-time agent events
 - `GET /projects/{id}/files` — list sandbox files
 - `GET /projects/{id}/download` — export project as ZIP
 - Auth routes under `/auth/` (register, login, refresh, logout, me)
 
-**LangGraph multi-agent system** (`agent/`) — 6-node pipeline:
+**2-Agent LangGraph system** (`agent/`):
 
-First build: `planner → scaffold → builder → build_checkpoint ⇄ fixer → app_start`
-Follow-up: `guardrail → builder → build_checkpoint ⇄ fixer → app_start` (planner/scaffold skipped)
+First build: `guardrail → prompt enhancer → build agent → assembler → sandbox`
+Follow-up: `guardrail → edit agent → validation loop (max 3) → sandbox`
 
-1. **Planner** (`agent/nodes/planner.py`) — enhances vague prompts + generates structured plan (components, pages, deps, file structure). Skipped on follow-ups.
-2. **Scaffold** (`agent/nodes/scaffold.py`) — deterministic (no LLM): installs deps, generates App.jsx with routes, index.css, page stubs. Skipped on follow-ups.
-3. **Builder** (`agent/nodes/builder.py`) — generates code via LLM tool calls. First build uses `create_file` + `write_multiple_files`. Follow-ups use `read_file` + `edit_file` + `create_file` for surgical edits.
-4. **Build Checkpoint** (`agent/nodes/build_checkpoint.py`) — runs `vite build` to check for compile errors, detects missing packages.
-5. **Fixer** (`agent/nodes/fixer.py`) — always uses Gemini Flash regardless of builder model. Fixes build/runtime errors with `read_file`, `create_file`, `execute_command` (npm install only).
-6. **App Start** (`agent/nodes/app_start.py`) — starts Vite dev server, checks HTTP 200, detects runtime errors in Vite logs. Routes to fixer if errors found.
+1. **Guardrail** (`agent/service.py:_classify_prompt`) — classifies every message as "build" or "chat". Uses the edit model (cheap). On follow-ups, injects project context. Distinguishes questions (chat) from change requests (build).
+2. **Prompt Enhancer** (`agent/service.py:_enhance_prompt`) — lightweight expansion of vague prompts (first builds only, skipped if prompt >200 chars). Additive only — never alters user specifications.
+3. **Build Agent** (`agent/build_agent.py`) — LangGraph agent loop using Sonnet 4.5 via OpenRouter. Tools: `create_app` (generates files), `web_search` (real-time data). Returns pure data — no sandbox I/O.
+4. **Edit Agent** (`agent/edit_agent.py`) — LangGraph agent loop using o4-mini. Tools: `modify_app` (edit/create/delete files), `chat_message` (respond to user), `web_search`. Also handles error fixes via `run_error_fix_stream()`.
+5. **Assembler** (`agent/assembler.py`) — merges LLM-generated files with base template. Strips conflicting imports, forces locked files from template.
+6. **Sandbox** (`agent/sandbox.py`) — E2B sandbox lifecycle: create, write files, install deps, start dev server, validate builds.
 
 Key files:
-- `agent/service.py` — orchestration, sandbox lifecycle, SSE event queue, guardrail classification
-- `agent/graph_builder.py` — constructs the LangGraph state machine with conditional edges
-- `agent/graph_state.py` — TypedDict state schema
-- `agent/nodes/` — individual node implementations (planner, scaffold, builder, build_checkpoint, fixer, app_start)
-- `agent/nodes/helpers.py` — shared utilities: NodeTimer, progress ticker, stream_agent_events
-- `agent/tools.py` — sandbox tools (file CRUD, shell exec, edit_file, context save/load)
-- `agent/prompts.py` — all LLM system/user prompts
+- `agent/service.py` — orchestration, sandbox lifecycle, SSE event queue, guardrail, prompt enhancer, first build + follow-up entry points
+- `agent/agent.py` — LLM configuration (hardcoded models via OpenRouter BYOK)
+- `agent/build_agent.py` — LangGraph build agent (Sonnet 4.5, `create_app` + `web_search`)
+- `agent/edit_agent.py` — LangGraph edit agent (o4-mini, `modify_app` + `chat_message` + `web_search`) + error fix agent
+- `agent/tools.py` — pure-data tools (no sandbox I/O): `create_app`, `modify_app`, `chat_message`, `web_search`
+- `agent/prompts.py` — all LLM prompts (guardrail, enhancer, chat response, build, edit, error fix)
+- `agent/assembler.py` — merges generated files with base template
+- `agent/sandbox.py` — E2B sandbox create/update/validate
+- `agent/base_template.py` — base project files (vite.config.js, main.jsx, index.css, etc.) and LOCKED_FILES set
+
+**LOCKED_FILES:** `{vite.config.js, src/main.jsx, index.html, tailwind.config.js, postcss.config.js}` — protected from LLM overwrites at both assembler and service layers. Critical: `vite.config.js` has `allowedHosts: true` for E2B preview.
+
+**Models (hardcoded via OpenRouter BYOK):**
+- Build agent: `anthropic/claude-sonnet-4.5` (high quality initial generation)
+- Edit agent: `openai/o4-mini` (fast follow-up edits, error fixes, guardrail, prompt enhancement)
 
 **E2B Sandboxes:** Each project gets an isolated Linux sandbox (30-min TTL). Sandbox IDs persist in metadata for reconnection.
 
@@ -63,9 +71,9 @@ Key files:
 
 **Auth** (`auth/`): JWT-based (HS256). Access tokens + refresh tokens with rotation.
 
-**Guardrail:** Runs on every message (first + follow-ups). Classifies prompts as "build" or "chat". On follow-ups, injects project context so error messages are correctly classified as build requests. On first message, runs in parallel with sandbox creation; cancels sandbox if classified as chat.
+**Validation Loop (edits only):** After edit agent returns changes, the service writes files to sandbox, runs `npm run build`, and if it fails, runs the error-fix agent (o4-mini) to patch errors. Max 3 attempts. First builds skip validation.
 
-**SSE events** streamed to frontend: `thinking`, `tool_started`, `tool_completed`, `file_created`, `file_edited`, `validation_error`, `runtime_error`, `progress`, `token_update`, etc.
+**SSE events** streamed to frontend: `started`, `log`, `token`, `file_update`, `status`, `warning`, `completed`, `error`, `chat_response`, `history`, `cancelled`.
 
 ### Frontend (`frontend/`)
 
@@ -74,13 +82,13 @@ Next.js App Router with TypeScript. Pages: landing (`/`), auth (`/signin`, `/sig
 - `api/` — Axios client with auth interceptor, organized by domain (auth.ts, chat.ts)
 - `lib/` — SSE event handlers (`sse-handlers.ts`), message types/utils (`chat-types.ts`, `chat-utils.ts`)
 - `components/ui/` — shadcn/ui primitives (emerald/slate theme)
-- `components/chat/` — chat-specific components (messages, preview panel, file viewer with Monaco editor)
+- `components/chat/` — chat-specific components (messages, terminal log, preview panel, file viewer with Monaco editor)
+
+**Terminal Log** (`components/chat/TerminalLog.tsx`): Shows real-time build progress with color-coded log lines, progress bar, and elapsed timer. Replaces the old 2-step stepper. Clears immediately on completion.
 
 Design: slate-950 background, emerald-500 accent, Geist + JetBrains Mono fonts.
 
-### Model Selection
-
-Users choose LLM per project via OpenRouter (BYOK): Gemini 2.5 Pro or Claude Sonnet 4. Planner uses the fast variant (Flash/Haiku). Fixer always uses Gemini Flash. Configured via `langchain-openai` provider pointed at OpenRouter.
+**Cloudflare Pages Deployment** (`utils/cloudflare.py`): Project names capped at 28 chars to avoid SSL cert issues with hash-prefixed subdomains.
 
 ## Environment Variables
 

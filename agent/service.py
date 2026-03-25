@@ -32,7 +32,7 @@ from .sandbox import (
     update_sandbox_files,
     validate_sandbox_build,
 )
-from .prompts import GUARDRAIL_PROMPT, CHAT_RESPONSE_PROMPT
+from .prompts import GUARDRAIL_PROMPT, CHAT_RESPONSE_PROMPT, ENHANCE_PROMPT
 
 load_dotenv()
 
@@ -247,6 +247,33 @@ class Service:
             print(f"Classification failed, defaulting to build: {e}")
             return "build"
 
+    async def _enhance_prompt(self, prompt: str, api_key: str) -> str:
+        """Enhance a vague user prompt into a detailed app specification.
+        Skips enhancement if prompt is already detailed (200+ chars).
+        """
+        if len(prompt.strip()) >= 200:
+            print(f"Prompt already detailed ({len(prompt)} chars), skipping enhancement")
+            return prompt
+
+        from langchain_core.messages import SystemMessage, HumanMessage
+        from .agent import create_edit_llm
+
+        try:
+            llm = create_edit_llm(api_key)
+            messages = [
+                SystemMessage(content=ENHANCE_PROMPT),
+                HumanMessage(content=prompt),
+            ]
+            response = await llm.ainvoke(messages)
+            enhanced = response.content.strip()
+            if enhanced and len(enhanced) > len(prompt):
+                print(f"Prompt enhanced: '{prompt[:60]}' → '{enhanced[:80]}...'")
+                return enhanced
+            return prompt
+        except Exception as e:
+            print(f"Prompt enhancement failed, using original: {e}")
+            return prompt
+
     async def _handle_chat_response(self, prompt, project_id, event_queue, api_key):
         """Answer a non-build prompt conversationally."""
         from langchain_core.messages import SystemMessage, HumanMessage
@@ -314,16 +341,22 @@ class Service:
             pre_sandbox = await sandbox_task
 
             event_queue.put_nowait({"e": "started"})
-            event_queue.put_nowait({"e": "log", "message": "Building your application..."})
 
             workflow_start = time.time()
 
-            # Run build agent
+            # Enhance prompt if it's short/vague
+            if len(prompt.strip()) < 200:
+                event_queue.put_nowait({"e": "log", "message": "Enhancing your prompt..."})
+            enhanced_prompt = await self._enhance_prompt(prompt, api_key)
+
+            event_queue.put_nowait({"e": "log", "message": "Building your application..."})
+
+            # Run build agent with enhanced prompt
             def on_build_event(event):
                 event_queue.put_nowait(event)
 
             result = await asyncio.wait_for(
-                run_build_stream(prompt, api_key, on_build_event),
+                run_build_stream(enhanced_prompt, api_key, on_build_event),
                 timeout=300,  # 5 minute timeout
             )
 
@@ -432,18 +465,27 @@ class Service:
 
             if not current_files:
                 # Fallback: read from sandbox
-                find_result = await sandbox.commands.run(
-                    "find src public -type f 2>/dev/null",
-                    cwd="/home/user/react-app",
-                )
-                file_paths = [p.strip() for p in find_result.stdout.strip().split("\n") if p.strip()]
-                current_files = {}
-                for path in file_paths:
-                    try:
-                        content = await sandbox.files.read(f"/home/user/react-app/{path}")
-                        current_files[path] = content
-                    except Exception:
-                        pass
+                try:
+                    find_result = await sandbox.commands.run(
+                        "find src public -type f 2>/dev/null",
+                        cwd="/home/user/react-app",
+                    )
+                    file_paths = [p.strip() for p in find_result.stdout.strip().split("\n") if p.strip()]
+                    current_files = {}
+                    for path in file_paths:
+                        try:
+                            content = await sandbox.files.read(f"/home/user/react-app/{path}")
+                            current_files[path] = content
+                        except Exception:
+                            pass
+                except Exception:
+                    current_files = {}
+
+            if not current_files:
+                # No project exists yet — treat as first build
+                print(f"No project files found for {project_id}, falling back to first build")
+                await self.handle_first_build(message, api_key, project_id, event_queue)
+                return
 
             # Load chat history for context
             chat_history = []

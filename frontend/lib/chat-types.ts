@@ -60,5 +60,7 @@ export interface SSEHandlers {
   setUserData: (data: any) => void;
   consolidateMessages: (messages: Message[]) => Message[];
   currentTool: ActiveToolCall | null;
+  currentBuildStage: BuildStage | null;
   setFileActivities?: React.Dispatch<React.SetStateAction<FileActivity[]>>;
+  setBuildLogs?: React.Dispatch<React.SetStateAction<string[]>>;
 }

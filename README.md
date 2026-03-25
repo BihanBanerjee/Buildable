@@ -2,14 +2,14 @@
 
 **Describe it. Build it. Ship it.**
 
-Buildable is an AI-powered web application builder that converts natural language descriptions into production-ready React apps. A multi-agent LangGraph pipeline plans, scaffolds, and generates code in an isolated E2B sandbox — with live preview, iterative chat refinement, and one-click export.
+Buildable is an AI-powered web application builder that converts natural language descriptions into production-ready React apps. A 2-agent LangGraph system generates and iterates on code in an isolated E2B sandbox — with live preview, iterative chat refinement, and one-click deployment to Cloudflare Pages.
 
 ## How It Works
 
 1. **Describe** — Write what you want in plain English
-2. **Build** — A 6-node AI pipeline plans, scaffolds, generates, validates, and fixes your app
-3. **Iterate** — Refine with follow-up messages; the builder makes surgical edits, not full rewrites
-4. **Ship** — Preview live, download as ZIP, deploy anywhere
+2. **Build** — A build agent (Sonnet 4.5) generates your app with automatic prompt enhancement
+3. **Iterate** — Refine with follow-up messages; an edit agent (o4-mini) makes surgical changes with build validation
+4. **Ship** — Preview live, download as ZIP, or deploy to Cloudflare Pages
 
 ## Architecture
 
@@ -24,30 +24,30 @@ Buildable is an AI-powered web application builder that converts natural languag
 │                    Backend (FastAPI)                     │
 │                                                         │
 │  ┌─── First Build ────────────────────────────────────┐ │
-│  │ planner → scaffold → builder → checkpoint ⇄ fixer  │ │
-│  │                                         → app_start│ │
+│  │ guardrail → enhancer → build agent → assembler     │ │
+│  │                                    → sandbox       │ │
 │  └────────────────────────────────────────────────────┘ │
 │  ┌─── Follow-up ──────────────────────────────────────┐ │
-│  │ guardrail → builder → checkpoint ⇄ fixer           │ │
-│  │                                  → app_start       │ │
+│  │ guardrail → edit agent → validate ⇄ error fix      │ │
+│  │                        → sandbox                   │ │
 │  └────────────────────────────────────────────────────┘ │
 │                                                         │
 │  Auth (JWT) · PostgreSQL · Cloudflare R2 · E2B Sandbox  │
 └─────────────────────────────────────────────────────────┘
 ```
 
-### Pipeline Nodes
+### 2-Agent System
 
-| Node | Role | LLM? |
-|------|------|------|
-| **Planner** | Enhances prompt, generates structured plan (components, pages, deps) | Fast model |
-| **Scaffold** | Installs deps, generates routes + page stubs | No |
-| **Builder** | Generates code via tool calls (`create_file`, `edit_file`) | User-selected |
-| **Checkpoint** | Runs `vite build`, detects missing packages | No |
-| **Fixer** | Fixes build/runtime errors (max 2 retries) | Gemini Flash |
-| **App Start** | Starts Vite dev server, checks HTTP 200 + runtime errors | No |
+| Agent | Model | Tools | Role |
+|-------|-------|-------|------|
+| **Build** | Sonnet 4.5 | `create_app`, `web_search` | Initial app generation from prompt |
+| **Edit** | o4-mini | `modify_app`, `chat_message`, `web_search` | Follow-up edits + error fixes |
 
-Follow-ups skip planner/scaffold and use `edit_file` for surgical changes instead of full rewrites.
+**Supporting steps:**
+- **Guardrail** — Classifies every message as "build" or "chat" (questions vs change requests)
+- **Prompt Enhancer** — Lightly expands vague prompts (e.g. "todo app" → adds key features). Additive only, skipped if prompt is already detailed
+- **Assembler** — Merges LLM files with base template, protects locked config files
+- **Validation Loop** — On edits: write → `npm run build` → if fail → error fix agent → retry (max 3)
 
 ## Tech Stack
 
@@ -57,7 +57,7 @@ Follow-ups skip planner/scaffold and use `edit_file` for surgical changes instea
 
 **Infrastructure:** DigitalOcean, Nginx, Certbot, Terraform, Neon PostgreSQL, Vercel
 
-**Models:** User-selected via OpenRouter (BYOK) — Gemini 2.5 Pro or Claude Sonnet 4
+**Models:** Hardcoded via OpenRouter (BYOK) — Sonnet 4.5 for builds, o4-mini for edits/guardrail/enhancement
 
 ## Getting Started
 
@@ -101,6 +101,8 @@ npm run dev                    # Start frontend on :3000
 | `R2_SECRET_KEY` | No | Cloudflare R2 secret key |
 | `R2_ENDPOINT` | No | Cloudflare R2 endpoint URL |
 | `R2_BUCKET_NAME` | No | R2 bucket name |
+| `CLOUDFLARE_ACCOUNT_ID` | No | Cloudflare account ID (for deployment) |
+| `CLOUDFLARE_API_TOKEN` | No | Cloudflare API token (for deployment) |
 | `FRONTEND_URL` | No | Frontend URL for CORS (default: `http://localhost:3000`) |
 
 ## Project Structure
@@ -109,15 +111,20 @@ npm run dev                    # Start frontend on :3000
 ├── main.py                    # FastAPI entry point
 ├── agent/
 │   ├── service.py             # Orchestration + sandbox lifecycle
-│   ├── graph_builder.py       # LangGraph state machine
-│   ├── tools.py               # Sandbox tools (file CRUD, exec)
-│   ├── prompts.py             # LLM prompts
-│   └── nodes/                 # Pipeline nodes (planner → app_start)
+│   ├── agent.py               # LLM configuration (models, OpenRouter)
+│   ├── build_agent.py         # Build agent (Sonnet 4.5)
+│   ├── edit_agent.py          # Edit agent + error fix (o4-mini)
+│   ├── tools.py               # Pure-data tools (create_app, modify_app, etc.)
+│   ├── prompts.py             # All LLM prompts
+│   ├── assembler.py           # Merge generated files with base template
+│   ├── sandbox.py             # E2B sandbox lifecycle
+│   └── base_template.py       # Base project files + LOCKED_FILES
 ├── auth/                      # JWT auth (register, login, refresh)
 ├── db/                        # SQLAlchemy models + base
 ├── utils/
 │   ├── r2.py                  # Cloudflare R2 client
-│   └── store.py               # Dual-write (R2 + local cache)
+│   ├── store.py               # Dual-write (R2 + local cache)
+│   └── cloudflare.py          # Cloudflare Pages deployment
 ├── alembic/                   # Database migrations
 ├── frontend/
 │   ├── app/                   # Next.js pages (/, /chat, /chat/[id])

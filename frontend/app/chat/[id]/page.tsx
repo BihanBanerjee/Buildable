@@ -11,7 +11,7 @@ import {
   PreviewPanel,
   ChatInput,
 } from "@/components/chat";
-import { BuildProgress } from "@/components/chat/BuildProgress";
+import { TerminalLog } from "@/components/chat/TerminalLog";
 import { consolidateMessages } from "@/lib/chat-utils";
 import { handleSSEMessage } from "@/lib/sse-handlers";
 import type { Message, ActiveToolCall, BuildStage, FileActivity } from "@/lib/chat-types";
@@ -42,6 +42,7 @@ export default function ChatIdPage() {
   const [fileActivities, setFileActivities] = useState<FileActivity[]>([]);
   const [deployedUrl, setDeployedUrl] = useState<string | null>(null);
   const [isLoadingFiles, setIsLoadingFiles] = useState(false);
+  const [buildLogs, setBuildLogs] = useState<string[]>([]);
 
   const eventSourceRef = useRef<EventSource | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -229,7 +230,9 @@ export default function ChatIdPage() {
             setUserData,
             consolidateMessages,
             currentTool,
+            currentBuildStage: buildStage,
             setFileActivities,
+            setBuildLogs,
           });
         };
 
@@ -372,7 +375,7 @@ export default function ChatIdPage() {
               <div ref={messagesEndRef} />
             </div>
 
-            <BuildProgress currentStage={buildStage} />
+            <TerminalLog logs={buildLogs} isBuilding={isBuilding} />
             <ChatInput
               input={input}
               wsConnected={sseConnected}
