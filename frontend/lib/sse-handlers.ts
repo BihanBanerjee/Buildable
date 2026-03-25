@@ -99,18 +99,18 @@ export function handleSSEMessage(event: MessageEvent, handlers: SSEHandlers) {
 
     // ── completed ──
     if (data.e === "completed") {
-      const wasBuild = !!handlers.currentBuildStage;
-
       handlers.setIsBuilding(false);
       handlers.setCurrentTool(null);
       handlers.setBuildStage("completed");
       handlers.setBuildLogs?.([]);
       handlers.setIsSending(false);
 
-      // Only show "Your app is ready" for actual builds, not chat responses
+      // Show summary for actual builds (which have duration_s), not chat responses
+      const wasBuild = data.duration_s != null || data.files != null;
       if (wasBuild) {
         const duration = (data.duration_s as number) || undefined;
         const isSuccess = data.success !== false;
+        const buildFiles = (data.files as string[]) || undefined;
 
         if (!isSuccess) {
           const errorMsg = "Build completed with errors. Some features may not work correctly.";
@@ -125,10 +125,18 @@ export function handleSSEMessage(event: MessageEvent, handlers: SSEHandlers) {
             (msg) => msg.role === "assistant"
           );
 
+          const completedFields = {
+            isCompleted: true,
+            isSuccess,
+            isProgress: false,
+            ...(duration ? { buildDuration: duration } : {}),
+            ...(buildFiles ? { buildFiles } : {}),
+          };
+
           if (lastAssistantIdx >= 0) {
             return cleaned.map((msg, idx) => {
               if (idx === lastAssistantIdx) {
-                return { ...msg, isCompleted: true, isSuccess, isProgress: false, ...(duration ? { buildDuration: duration } : {}) };
+                return { ...msg, ...completedFields };
               }
               return msg;
             });
@@ -141,9 +149,7 @@ export function handleSSEMessage(event: MessageEvent, handlers: SSEHandlers) {
             content: "Build complete.",
             created_at: new Date().toISOString(),
             event_type: "completed",
-            isCompleted: true,
-            isSuccess,
-            ...(duration ? { buildDuration: duration } : {}),
+            ...completedFields,
           }];
         });
       }

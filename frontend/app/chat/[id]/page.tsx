@@ -229,8 +229,6 @@ export default function ChatIdPage() {
             setError,
             setUserData,
             consolidateMessages,
-            currentTool,
-            currentBuildStage: buildStage,
             setFileActivities,
             setBuildLogs,
           });

@@ -409,11 +409,13 @@ class Service:
 
             # Send completion
             duration = round(time.time() - workflow_start, 2)
+            build_files = sorted(f["path"] for f in generated_files)
             event_queue.put_nowait({
                 "e": "completed",
                 "success": True,
                 "url": url,
                 "duration_s": duration,
+                "files": build_files,
             })
 
             build_summary = [{
@@ -422,7 +424,7 @@ class Service:
                 "detail": f"{len(generated_files)} files generated",
                 "output": json.dumps({
                     "duration_s": duration,
-                    "files": sorted(f["path"] for f in generated_files),
+                    "files": build_files,
                 }),
             }]
             await self._store_message(project_id, "assistant", f"Build complete. Preview: {url}", "completed", tool_calls=build_summary)
@@ -597,11 +599,13 @@ class Service:
 
             # Completion
             duration = round(time.time() - workflow_start, 2)
+            edit_files = sorted(c["path"] for c in file_changes)
             event_queue.put_nowait({
                 "e": "completed",
                 "success": True,
                 "url": url,
                 "duration_s": duration,
+                "files": edit_files,
             })
 
             edit_summary = [{
