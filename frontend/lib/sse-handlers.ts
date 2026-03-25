@@ -136,9 +136,19 @@ export function handleSSEMessage(event: MessageEvent, handlers: SSEHandlers) {
       }
 
       handlers.setMessages((prev) => {
-        return prev.map((msg, idx) => {
-          if (idx === prev.length - 1 && msg.role === "assistant") {
-            return { ...msg, isCompleted: true, isSuccess, ...(duration ? { buildDuration: duration } : {}) };
+        // Remove trailing progress messages (e.g. "Validating code...")
+        const cleaned = prev.filter((msg, idx) => {
+          if (idx >= prev.length - 3 && msg.isProgress) return false;
+          return true;
+        });
+
+        // Find the last assistant message to mark as completed
+        const lastAssistantIdx = cleaned.findLastIndex(
+          (msg) => msg.role === "assistant"
+        );
+        return cleaned.map((msg, idx) => {
+          if (idx === lastAssistantIdx) {
+            return { ...msg, isCompleted: true, isSuccess, isProgress: false, ...(duration ? { buildDuration: duration } : {}) };
           }
           return msg;
         });
