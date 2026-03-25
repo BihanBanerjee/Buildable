@@ -1,4 +1,4 @@
-from agent.base_template import BASE_TEMPLATE
+from agent.base_template import BASE_TEMPLATE, LOCKED_FILES
 
 
 # ---------------------------------------------------------------------------
@@ -47,7 +47,7 @@ Keep your response under 150 words. Be friendly and natural."""
 
 def get_build_system_prompt() -> str:
     """Return the system prompt for the initial app-build agent."""
-    base_files = "\n- ".join(BASE_TEMPLATE.keys())
+    base_files = "\n- ".join(LOCKED_FILES)
 
     return f"""
 You are **Buildable**, an elite AI editor that generates and modifies
@@ -293,7 +293,7 @@ COMMON FIXES
 - "Cannot find module './X'" → fix the import path (pages use '../components/X', components use './Y')
 - "X is not exported from" → fix the export in the source file (add export default)
 - "Unexpected token" → fix JSX syntax
-- Missing package: run execute_command("npm install <package-name>")
+- Missing package: add the import and ensure the package is in the pre-installed list (react-router-dom, clsx, tailwind-merge, lucide-react)
 
 ==================================================
 TECH STACK
