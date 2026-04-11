@@ -4,6 +4,8 @@
 
 Buildable is an AI-powered web application builder that converts natural language descriptions into production-ready React apps. A 2-agent LangGraph system generates and iterates on code in an isolated E2B sandbox — with live preview, iterative chat refinement, and one-click deployment to Cloudflare Pages.
 
+![Buildable Demo](assets/buildable-demo.png)
+
 ## How It Works
 
 1. **Describe** — Write what you want in plain English
